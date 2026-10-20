@@ -91,6 +91,7 @@ describe("loadConfig", () => {
 
   it("uses defaults without creating a configuration directory", async () => {
     expect(await loadConfig(path)).toEqual({
+      models: {},
       mcpServers: {},
       agents: { "task-collector": { enabled: true } },
     });
@@ -106,6 +107,7 @@ describe("loadConfig", () => {
   ])("fills in omitted settings for %j", async (config) => {
     await writeConfig(JSON.stringify(config));
     expect(await loadConfig(path)).toEqual({
+      models: {},
       mcpServers: {},
       agents: { "task-collector": { enabled: true } },
     });
@@ -130,6 +132,40 @@ describe("loadConfig", () => {
     await expect(loadConfig(path)).rejects.toThrow(
       `Ungültige Konfiguration in ${path}`,
     );
+  });
+
+  it("loads named models and the agent's model reference", async () => {
+    await writeConfig(JSON.stringify({
+      models: {
+        fast: { provider: "openrouter", model: "vendor/model-a" },
+        thorough: { provider: "openrouter", model: "vendor/model-b", maxOutputTokens: 4096, temperature: 0.5 },
+      },
+      agents: { "task-collector": { model: "fast" } },
+    }));
+    const config = await loadConfig(path);
+    expect(config.models.fast).toEqual({ provider: "openrouter", model: "vendor/model-a", maxOutputTokens: 2048 });
+    expect(config.models.thorough).toEqual({ provider: "openrouter", model: "vendor/model-b", maxOutputTokens: 4096, temperature: 0.5 });
+    expect(config.agents["task-collector"]).toEqual({ enabled: true, model: "fast" });
+  });
+
+  it.each([
+    { provider: "unknown", model: "model" },
+    { provider: "openrouter", model: " " },
+    { provider: "openrouter", model: "model", maxOutputTokens: 0 },
+    { provider: "openrouter", model: "model", maxOutputTokens: 1.5 },
+    { provider: "openrouter", model: "model", temperature: 3 },
+    { provider: "openrouter", model: "model", apiKey: "SECRET" },
+    { provider: "openrouter", model: "model", baseURL: "https://SECRET.invalid" },
+  ])("rejects invalid model settings without leaking values: %j", async (model) => {
+    await writeConfig(JSON.stringify({ models: { test: model } }));
+    const error = await loadConfig(path).catch((error: Error) => error);
+    expect(String(error)).toContain("models.test");
+    expect(String(error)).not.toContain("SECRET");
+  });
+
+  it.each(["missing", "__proto__", "constructor"])("rejects unknown model reference %s", async (model) => {
+    await writeConfig(JSON.stringify({ agents: { "task-collector": { model } } }));
+    await expect(loadConfig(path)).rejects.toThrow("agents.task-collector.model");
   });
 
   it("loads global MCP servers and transport defaults", async () => {

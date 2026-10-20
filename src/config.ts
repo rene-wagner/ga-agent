@@ -50,16 +50,33 @@ const mcpServerSchema = z.discriminatedUnion("transport", [
   }
 });
 
+const modelName = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/);
+const modelSchema = z.strictObject({
+  provider: z.literal("openrouter"),
+  model: z.string().trim().min(1),
+  maxOutputTokens: z.number().int().positive().default(2048),
+  temperature: z.number().min(0).max(2).optional(),
+});
+
 const configSchema = z.strictObject({
+  models: z.record(modelName, modelSchema).default({}),
   mcpServers: z.record(z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,31}$/), mcpServerSchema).default({}),
   agents: z.strictObject({
     "task-collector": z.strictObject({
       enabled: z.boolean().default(true),
+      model: modelName.optional(),
     }).prefault({}),
   }).prefault({}),
+}).superRefine((config, context) => {
+  for (const [name, agent] of Object.entries(config.agents)) {
+    if (agent.model !== undefined && !Object.hasOwn(config.models, agent.model)) {
+      context.addIssue({ code: "custom", message: "Unbekannte Modellkonfiguration", path: ["agents", name, "model"] });
+    }
+  }
 });
 
 export type Config = z.infer<typeof configSchema>;
+export type ModelConfig = Config["models"][string];
 export type McpServerConfig = Config["mcpServers"][string];
 export type HttpMcpServerConfig = Extract<McpServerConfig, { transport: "http" }>;
 
@@ -122,7 +139,12 @@ export async function loadConfig(
   } catch (error) {
     // Zod/JSON parser messages may contain credential values from the input.
     const detail = error instanceof z.ZodError
-      ? error.issues.map((issue) => `${issue.path.join(".") || "config"}: ${issue.code}`).join("; ")
+      ? error.issues.map((issue) => {
+        const detail = issue.code === "custom" && issue.path[0] === "agents"
+          ? "Unbekannte Modellkonfiguration"
+          : issue.code;
+        return `${issue.path.join(".") || "config"}: ${detail}`;
+      }).join("; ")
       : "Ungültiges JSON";
     throw new Error(`Ungültige Konfiguration in ${path}: ${detail}`);
   }

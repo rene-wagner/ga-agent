@@ -50,12 +50,14 @@ program
     }
 
     const config = await loadConfig();
-    if (!config.agents[agent.name].enabled) {
+    const agentConfig = config.agents[agent.name];
+    if (!agentConfig.enabled) {
       throw new Error(`Agent "${name}" ist deaktiviert.`);
     }
 
     const result = await withShutdown((signal) => runAgent(agent, {
       skill: options.skill,
+      modelConfig: agentConfig.model === undefined ? undefined : config.models[agentConfig.model],
       mcpServers: config.mcpServers,
       signal,
     }));

@@ -3,14 +3,24 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { runAgent, type AgentContext } from "../src/agents/runtime.js";
+import { runAgent, type AgentContext, type AgentDefinition } from "../src/agents/runtime.js";
 import { createAgentSupport } from "../src/agents/tools.js";
 import { resolveMcpEnvironment, type Config, type McpServerConfig } from "../src/config.js";
 import { validateToolNames, withMcpTools } from "../src/mcp/index.js";
 import { startMcpHttp } from "./helpers/mcp-http.js";
+import { ScriptedModel } from "./helpers/model.js";
 
 const fixture = fileURLToPath(new URL("./fixtures/mcp-server.mjs", import.meta.url));
 const local: Extract<McpServerConfig, { transport: "stdio" }> = { enabled: true, transport: "stdio", command: process.execPath, args: [fixture] };
+
+const modelAgent: AgentDefinition = {
+  name: "model-agent",
+  graph: {
+    async invoke(_input, { context, signal }) {
+      return { message: (await context.model.invoke("Hello", { signal })).text };
+    },
+  },
+};
 
 describe("MCP tools", () => {
   let directory: string;
@@ -127,9 +137,33 @@ describe("MCP tools", () => {
         expect(JSON.stringify(await tools[2].invoke({ text: name }))).toContain(name);
         return { message: name };
       });
-      expect(await runAgent({ name, graph: { invoke } }, { skillsPath: join(directory, "skills"), mcpServers: { service: local } })).toEqual({ message: name });
+      expect(await runAgent({ name, graph: { invoke } }, { skillsPath: join(directory, "skills"), mcpServers: { service: local }, model: new ScriptedModel() })).toEqual({ message: name });
       expect(invoke).toHaveBeenCalledOnce();
     }
+  });
+
+  it("closes MCP processes when model generation fails", async () => {
+    vi.stubEnv("GA_MCP_TEST", "resolved");
+    const model = new ScriptedModel();
+    vi.spyOn(model, "_generate").mockRejectedValue(new Error("model failure"));
+    await expect(runAgent(modelAgent, {
+      skillsPath: join(directory, "missing"), mcpServers: servers(), model,
+    })).rejects.toThrow("model failure");
+    await expectStopped();
+    expect(model.requests).toHaveLength(0);
+  });
+
+  it("closes MCP processes when the total model run times out", async () => {
+    vi.stubEnv("GA_MCP_TEST", "resolved");
+    const model = new ScriptedModel();
+    vi.spyOn(model, "_generate").mockImplementation((_messages, options) => new Promise((_resolve, reject) => {
+      options.signal?.addEventListener("abort", () => reject(new Error("cancelled")), { once: true });
+    }));
+    await expect(runAgent(modelAgent, {
+      skillsPath: join(directory, "missing"), mcpServers: servers(), model, timeoutMs: 1000,
+    })).rejects.toThrow("Zeitlimit für den Agent-Lauf");
+    expect(model._generate).toHaveBeenCalledOnce();
+    await expectStopped();
   });
 
   it("requires OAuth credentials rather than connecting anonymously", async () => {

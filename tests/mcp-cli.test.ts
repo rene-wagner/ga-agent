@@ -10,6 +10,11 @@ import { startMcpHttp } from "./helpers/mcp-http.js";
 
 const execute = promisify(execFile);
 const cliPath = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
+const modelFixture = fileURLToPath(new URL("./fixtures/llm-fetch.mjs", import.meta.url));
+const modelConfiguration = {
+  models: { fast: { provider: "openrouter", model: "vendor/model-a" } },
+  agents: { "task-collector": { model: "fast" } },
+};
 
 describe("MCP CLI", () => {
   let home: string;
@@ -31,16 +36,17 @@ describe("MCP CLI", () => {
       ...process.env, HOME: home, USERPROFILE: home,
       PATH: `${join(home, "bin")}${delimiter}${process.env.PATH}`,
       LANGSMITH_TRACING: "false", LANGCHAIN_TRACING_V2: "false",
+      OPENROUTER_API_KEY: "test-only", GA_TEST_LLM_MODE: "",
     };
   }
   function run(...args: string[]) {
-    return execute(process.execPath, ["--import", "tsx", cliPath, ...args], { env: env(), timeout: 10_000 });
+    return execute(process.execPath, ["--import", "tsx", "--import", modelFixture, cliPath, ...args], { env: env(), timeout: 10_000 });
   }
   async function configure() {
-    await writeFile(join(configDirectory, "config.json"), JSON.stringify({ mcpServers: { remote: service.config } }));
+    await writeFile(join(configDirectory, "config.json"), JSON.stringify({ ...modelConfiguration, mcpServers: { remote: service.config } }));
   }
 
-  it("completes browser login, runs with saved credentials, and logs out", async () => {
+  it("supports login/logout independently of the plain LLM agent", async () => {
     await configure();
     await mkdir(join(home, "bin"));
     await writeFile(join(home, "bin", "xdg-open"), `#!/usr/bin/env node
@@ -58,11 +64,11 @@ describe("MCP CLI", () => {
     credentials.expiresAt = 0;
     await store.withLock(() => store.write(credentials));
     const results = await Promise.all([run("run", "task-collector"), run("run", "task-collector")]);
-    for (const result of results) expect(result.stdout).toBe("task-collector: Dummy erfolgreich ausgeführt.\n");
+    for (const result of results) expect(result.stdout).toBe("Aufgaben gesammelt mit vendor/model-a.\n");
     expect((await run("mcp", "logout", "remote")).stdout).toBe('MCP-Server "remote": abgemeldet.\n');
     expect(await readdir(join(configDirectory, "auth"))).toEqual([]);
-    expect(service.counts).toMatchObject({ registration: 1, exchange: 1, refresh: 1, revocation: 1 });
-    await expect(run("run", "task-collector")).rejects.toMatchObject({ code: 1, stderr: expect.stringContaining("ga-agent mcp login remote") });
+    expect(service.counts).toMatchObject({ registration: 1, exchange: 1, refresh: 0, revocation: 1, calls: 0 });
+    expect((await run("run", "task-collector")).stdout).toContain("Aufgaben gesammelt");
   });
 
   it("does not connect or create credentials for listing and help", async () => {
@@ -90,30 +96,43 @@ describe("MCP CLI", () => {
       agents: { "task-collector": { enabled: false } }, mcpServers: { remote: service.config },
     }));
     await expect(run("run", "task-collector")).rejects.toMatchObject({ stderr: expect.stringContaining("deaktiviert") });
-    await writeFile(join(configDirectory, "config.json"), JSON.stringify({ mcpServers: { remote: { ...service.config, enabled: false } } }));
-    expect((await run("run", "task-collector")).stdout).toContain("Dummy erfolgreich");
+    await writeFile(join(configDirectory, "config.json"), JSON.stringify({ ...modelConfiguration, mcpServers: { remote: { ...service.config, enabled: false } } }));
+    expect((await run("run", "task-collector")).stdout).toContain("Aufgaben gesammelt");
     expect(await readdir(configDirectory)).toEqual(["config.json"]);
   });
 
-  it("handles SIGTERM during initialization and stops its stdio subprocess", async () => {
+  it.each([["SIGINT", 130], ["SIGTERM", 143]] as const)("handles %s during a model request without starting MCP", async (signal, code) => {
     const pidFile = join(home, "pid");
-    await writeFile(join(configDirectory, "config.json"), JSON.stringify({ mcpServers: { silent: {
-      transport: "stdio", command: process.execPath,
-      args: ["-e", `require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); process.stdin.resume();`],
-    } } }));
-    const child = spawn(process.execPath, ["--import", "tsx", cliPath, "run", "task-collector"], { env: env(), stdio: "ignore" });
+    const marker = join(home, "model-started");
+    const server = fileURLToPath(new URL("./fixtures/mcp-server.mjs", import.meta.url));
+    await writeFile(join(configDirectory, "config.json"), JSON.stringify({
+      ...modelConfiguration,
+      mcpServers: { local: { transport: "stdio", command: process.execPath, args: [server], env: { TEST_PID_FILE: pidFile } } },
+    }));
+    const child = spawn(process.execPath, ["--import", "tsx", "--import", modelFixture, cliPath, "run", "task-collector"], {
+      env: { ...env(), GA_TEST_LLM_MODE: "hang", GA_TEST_LLM_MARKER: marker }, stdio: "ignore",
+    });
     const finished = new Promise<number | null>((resolve) => child.once("exit", resolve));
     try {
-      await vi.waitFor(async () => expect(Number(await readFile(pidFile, "utf8"))).toBeGreaterThan(0), { timeout: 3000 });
-      child.kill("SIGTERM");
+      await vi.waitFor(async () => expect(await readFile(marker, "utf8")).toBe("started"), { timeout: 3000 });
+      child.kill(signal);
       const timer = setTimeout(() => child.kill("SIGKILL"), 3000);
-      try { expect(await finished).toBe(143); }
+      try { expect(await finished).toBe(code); }
       finally { clearTimeout(timer); }
-      const pid = Number(await readFile(pidFile, "utf8"));
-      await vi.waitFor(() => expect(() => process.kill(pid, 0)).toThrow());
+      await expect(readFile(pidFile, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
     } finally {
       child.kill("SIGKILL");
       await finished;
     }
+  });
+
+  it("does not start nonresponsive MCP servers for task-collector", async () => {
+    const pidFile = join(home, "pid");
+    await writeFile(join(configDirectory, "config.json"), JSON.stringify({ ...modelConfiguration, mcpServers: { silent: {
+      transport: "stdio", command: process.execPath,
+      args: ["-e", `require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); process.stdin.resume();`],
+    } } }));
+    expect((await run("run", "task-collector")).stdout).toContain("Aufgaben gesammelt");
+    await expect(readFile(pidFile, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
   });
 });

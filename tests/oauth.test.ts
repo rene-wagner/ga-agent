@@ -7,6 +7,7 @@ import { CredentialStore } from "../src/mcp/credentials.js";
 import { withMcpTools } from "../src/mcp/index.js";
 import { createOAuthAuthProvider, loginMcpServer, logoutMcpServer, startOAuthCallback } from "../src/mcp/oauth.js";
 import { startMcpHttp } from "./helpers/mcp-http.js";
+import { ScriptedModel } from "./helpers/model.js";
 
 describe("MCP OAuth", () => {
   let directory: string;
@@ -67,7 +68,7 @@ describe("MCP OAuth", () => {
         return { message: name };
       };
       expect(await runAgent({ name, graph: { invoke } }, {
-        mcpServers: { remote: service.config }, authDirectory, skillsPath: join(directory, "missing-skills"),
+        mcpServers: { remote: service.config }, authDirectory, skillsPath: join(directory, "missing-skills"), model: new ScriptedModel(),
       })).toEqual({ message: name });
     }
     expect(service.counts).toMatchObject({ registration: 1, exchange: 1, calls: 2 });

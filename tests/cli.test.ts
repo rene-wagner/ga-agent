@@ -6,6 +6,12 @@ import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 const cliPath = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
+const modelFixture = fileURLToPath(new URL("./fixtures/llm-fetch.mjs", import.meta.url));
+const modelConfiguration = {
+  models: { fast: { provider: "openrouter", model: "vendor/model-a" } },
+  agents: { "task-collector": { model: "fast" } },
+};
+const answer = "Aufgaben gesammelt mit vendor/model-a.\n";
 
 describe("CLI", () => {
   let home: string;
@@ -18,8 +24,10 @@ describe("CLI", () => {
     await rm(home, { recursive: true, force: true });
   });
 
-  function run(...args: string[]) {
-    const result = spawnSync(process.execPath, ["--import", "tsx", cliPath, ...args], {
+  function run(...args: string[]) { return runWithEnv(args); }
+
+  function runWithEnv(args: string[], environment: NodeJS.ProcessEnv = {}) {
+    const result = spawnSync(process.execPath, ["--import", "tsx", "--import", modelFixture, cliPath, ...args], {
       encoding: "utf8",
       timeout: 10_000,
       env: {
@@ -28,6 +36,9 @@ describe("CLI", () => {
         USERPROFILE: home,
         LANGSMITH_TRACING: "false",
         LANGCHAIN_TRACING_V2: "false",
+        OPENROUTER_API_KEY: "test-only",
+        GA_TEST_LLM_MODE: "",
+        ...environment,
       },
     });
     expect(result.error).toBeUndefined();
@@ -59,28 +70,74 @@ describe("CLI", () => {
     expect(await readdir(home)).toEqual([]);
   });
 
-  it("runs the dummy agent without configuration or API keys", async () => {
+  it("requires an explicit model assignment without creating user files", async () => {
     const result = run("run", "task-collector");
 
-    expect(result.status).toBe(0);
-    expect(result.stdout).toBe("task-collector: Dummy erfolgreich ausgeführt.\n");
-    expect(result.stderr).toBe("");
+    expect(result.status).toBe(1);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toContain("agents.task-collector.model");
     expect(await readdir(home)).toEqual([]);
   });
 
+  it("selects the agent's named model and applies configuration changes without a build", async () => {
+    const models = {
+      fast: { provider: "openrouter", model: "vendor/model-a" },
+      thorough: { provider: "openrouter", model: "vendor/model-b" },
+    };
+    for (const [model, id] of [["fast", "vendor/model-a"], ["thorough", "vendor/model-b"]]) {
+      await writeConfig(JSON.stringify({ models, agents: { "task-collector": { model } } }));
+      const result = run("run", "task-collector");
+      expect(result.status).toBe(0);
+      expect(result.stdout).toBe(`Aufgaben gesammelt mit ${id}.\n`);
+      expect(result.stderr).toBe("");
+    }
+  });
+
+  it("requires a nonempty API key only for run, not list or help", async () => {
+    await writeConfig(JSON.stringify(modelConfiguration));
+    const result = runWithEnv(["run", "task-collector"], { OPENROUTER_API_KEY: "" });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("OPENROUTER_API_KEY fehlt oder ist leer");
+    for (const args of [["list"], ["--help"], ["run", "--help"]]) {
+      expect(runWithEnv(args, { OPENROUTER_API_KEY: "" }).status).toBe(0);
+    }
+  });
+
+  it("loads the OpenRouter key from the configured .env and preserves an empty process value", async () => {
+    await writeConfig(JSON.stringify(modelConfiguration));
+    await writeFile(join(home, ".config", "ga-agent", ".env"), "OPENROUTER_API_KEY=from-file\n");
+    const loaded = runWithEnv(["run", "task-collector"], { OPENROUTER_API_KEY: undefined });
+    expect(loaded.status).toBe(0);
+    expect(loaded.stdout).toBe(answer);
+    const empty = runWithEnv(["run", "task-collector"], { OPENROUTER_API_KEY: "" });
+    expect(empty.status).toBe(1);
+    expect(empty.stderr).toContain("OPENROUTER_API_KEY fehlt oder ist leer");
+  });
+
+  it("does not expose provider errors or secrets in CLI output", async () => {
+    await writeConfig(JSON.stringify(modelConfiguration));
+    const result = runWithEnv(["run", "task-collector"], { GA_TEST_LLM_MODE: "error" });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("API-Key ungültig");
+    expect(result.stderr).not.toContain("SECRET");
+    expect(result.stderr).not.toContain("test-only");
+    expect(result.stdout).toBe("");
+  });
+
   it("activates a skill from the user configuration directory", async () => {
+    await writeConfig(JSON.stringify(modelConfiguration));
     const path = join(home, ".config", "ga-agent", "skills", "tasks");
     await mkdir(path, { recursive: true });
     await writeFile(join(path, "SKILL.md"), "---\nname: tasks\ndescription: Collect tasks.\n---\nCollect tasks from notes.");
 
     const defaultRun = run("run", "task-collector");
     expect(defaultRun.status).toBe(0);
-    expect(defaultRun.stdout).toBe("task-collector: Dummy erfolgreich ausgeführt.\n");
+    expect(defaultRun.stdout).toBe(answer);
     expect(defaultRun.stderr).toBe("");
 
     const result = run("run", "task-collector", "--skill", "tasks");
     expect(result.status).toBe(0);
-    expect(result.stdout).toBe('task-collector: Dummy erfolgreich ausgeführt. Skill "tasks" geladen.\n');
+    expect(result.stdout).toBe(answer);
     expect(result.stderr).toBe("");
   });
 
@@ -92,6 +149,7 @@ describe("CLI", () => {
   });
 
   it("warns about invalid skills and fails when one is explicitly requested", async () => {
+    await writeConfig(JSON.stringify(modelConfiguration));
     const path = join(home, ".config", "ga-agent", "skills", "broken");
     await mkdir(path, { recursive: true });
     await writeFile(join(path, "SKILL.md"), "invalid");
@@ -159,7 +217,7 @@ describe("CLI", () => {
     `;
     const scriptPath = join(home, "check-env.mjs");
     await writeFile(scriptPath, script);
-    const result = spawnSync(process.execPath, ["--import", import.meta.resolve("tsx"), scriptPath], {
+    const result = spawnSync(process.execPath, ["--import", import.meta.resolve("tsx"), "--import", modelFixture, scriptPath], {
       encoding: "utf8",
       timeout: 10_000,
       cwd: home,
@@ -175,11 +233,10 @@ describe("CLI", () => {
     });
 
     expect(result.error).toBeUndefined();
-    expect(result.stderr).toBe("");
-    expect(result.status).toBe(0);
-    expect(result.stdout).toBe(args[0] === "list"
-      ? "task-collector\taktiviert\n"
-      : "task-collector: Dummy erfolgreich ausgeführt.\n");
+    expect(result.status).toBe(args[0] === "list" ? 0 : 1);
+    expect(result.stdout).toBe(args[0] === "list" ? "task-collector\taktiviert\n" : "");
+    if (args[0] === "list") expect(result.stderr).toBe("");
+    else expect(result.stderr).toContain("agents.task-collector.model");
   });
 
   it.each([

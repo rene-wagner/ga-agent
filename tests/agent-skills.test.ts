@@ -6,6 +6,7 @@ import { runAgent, type AgentContext } from "../src/agents/runtime.js";
 import { taskCollector } from "../src/agents/task-collector.js";
 import { discoverSkills } from "../src/skills/index.js";
 import { createSkillSupport } from "../src/skills/tools.js";
+import { ScriptedModel } from "./helpers/model.js";
 
 describe("agent skill support", () => {
   let directory: string;
@@ -82,19 +83,28 @@ describe("agent skill support", () => {
     await expect(support.tools[1].invoke({ name: "tasks", path: "../../secret.md" })).rejects.toThrow("außerhalb");
   });
 
-  it("runs the unchanged dummy without activating installed skills", async () => {
+  it("does not include installed skills in the simplified task-collector prompt", async () => {
     await installSkill();
-    expect(await runAgent({ name: "task-collector", graph: taskCollector }, { skillsPath: root })).toEqual({
-      message: "task-collector: Dummy erfolgreich ausgeführt.",
+    const model = new ScriptedModel();
+    expect(await runAgent({ name: "task-collector", graph: taskCollector }, { skillsPath: root, model })).toEqual({
+      message: "Aufgaben gesammelt.",
     });
+    const prompt = JSON.stringify(model.requests[0].messages);
+    expect(prompt).not.toContain("Collect tasks from notes.");
+    expect(prompt).not.toContain("SECRET INSTRUCTIONS");
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it("runs the dummy with an explicitly activated skill without network access", async () => {
+  it("does not include activated skills or bind tools in the simplified task-collector", async () => {
     await installSkill();
-    expect(await runAgent({ name: "task-collector", graph: taskCollector }, { skillsPath: root, skill: "tasks" })).toEqual({
-      message: 'task-collector: Dummy erfolgreich ausgeführt. Skill "tasks" geladen.',
+    const model = new ScriptedModel();
+    expect(await runAgent({ name: "task-collector", graph: taskCollector }, { skillsPath: root, skill: "tasks", model })).toEqual({
+      message: "Aufgaben gesammelt.",
     });
+    const messages = model.requests[0].messages;
+    expect(messages[0].content).not.toContain("SECRET INSTRUCTIONS");
+    expect(messages[1].content).not.toContain("SECRET INSTRUCTIONS");
+    expect(model.requests[0].options.tools).toBeUndefined();
     expect(fetch).not.toHaveBeenCalled();
   });
 
@@ -107,7 +117,7 @@ describe("agent skill support", () => {
       expect(await support.tools[1].invoke({ name: "tasks", path: "references/example.md" })).toBe("SECRET REFERENCE");
       return { message: "Another agent used a skill." };
     });
-    expect(await runAgent({ name: "another-agent", graph: { invoke } }, { skillsPath: root, skill: "tasks" })).toEqual({
+    expect(await runAgent({ name: "another-agent", graph: { invoke } }, { skillsPath: root, skill: "tasks", model: new ScriptedModel() })).toEqual({
       message: "Another agent used a skill.",
     });
     expect(invoke).toHaveBeenCalledOnce();
@@ -120,7 +130,7 @@ describe("agent skill support", () => {
     await mkdir(join(root, "broken"));
     await writeFile(join(root, "broken", "SKILL.md"), "broken");
     const onWarning = vi.fn();
-    await runAgent({ name: "task-collector", graph: taskCollector }, { skillsPath: root, skill: "tasks", onWarning });
+    await runAgent({ name: "task-collector", graph: taskCollector }, { skillsPath: root, skill: "tasks", onWarning, model: new ScriptedModel() });
     expect(onWarning).toHaveBeenCalledOnce();
     expect(onWarning.mock.calls[0][0]).toContain(join(root, "broken", "SKILL.md"));
   });

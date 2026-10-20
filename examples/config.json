@@ -1,0 +1,21 @@
+{
+  "models": {
+    "fast": {
+      "provider": "openrouter",
+      "model": "openai/gpt-4.1-mini",
+      "maxOutputTokens": 2048
+    },
+    "thorough": {
+      "provider": "openrouter",
+      "model": "anthropic/claude-sonnet-4.5",
+      "maxOutputTokens": 4096
+    }
+  },
+  "agents": {
+    "task-collector": {
+      "enabled": true,
+      "model": "fast"
+    }
+  },
+  "mcpServers": {}
+}
