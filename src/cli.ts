@@ -1,16 +1,19 @@
 #!/usr/bin/env node
 import { Command } from "commander";
-import { agents } from "./agents/index.js";
-import { loadConfig } from "./config.js";
+import { loadConfig, loadEnv } from "./config.js";
 
 const program = new Command()
   .name("ga-agent")
-  .description("LangGraph-Agents auflisten und ausführen");
+  .description("LangGraph-Agents auflisten und ausführen")
+  .hook("preAction", () => {
+    loadEnv();
+  });
 
 program
   .command("list")
   .description("Verfügbare Agents und ihren Aktivierungsstatus anzeigen")
   .action(async () => {
+    const { agents } = await import("./agents/index.js");
     const config = await loadConfig();
 
     for (const agent of agents) {
@@ -24,6 +27,7 @@ program
   .description("Einen Agent ausführen")
   .argument("<name>", "Name des Agents")
   .action(async (name: string) => {
+    const { agents } = await import("./agents/index.js");
     const agent = agents.find((entry) => entry.name === name);
     if (!agent) {
       throw new Error(`Unbekannter Agent: ${name}. Verfügbare Agents: ${agents.map((entry) => entry.name).join(", ")}`);

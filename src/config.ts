@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { loadEnvFile } from "node:process";
 import { z } from "zod";
 
 const configSchema = z.strictObject({
@@ -12,6 +13,22 @@ const configSchema = z.strictObject({
 });
 
 export type Config = z.infer<typeof configSchema>;
+
+export function loadEnv(
+  path = join(homedir(), ".config", "ga-agent", ".env"),
+): void {
+  try {
+    loadEnvFile(path);
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+      return;
+    }
+
+    throw new Error(`Umgebungsvariablen aus ${path} konnten nicht geladen werden.`, {
+      cause: error,
+    });
+  }
+}
 
 export async function loadConfig(
   path = join(homedir(), ".config", "ga-agent", "config.json"),

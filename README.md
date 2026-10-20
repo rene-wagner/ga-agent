@@ -84,12 +84,37 @@ Beispiel mit dem Standardwert:
 - Die CLI legt weder die Datei noch das Verzeichnis automatisch an.
 - Die Datei enthält bislang keine Provider-, Modell- oder Prompt-Konfiguration.
 
+### Umgebungsvariablen aus `.env`
+
+Zusätzlich wird eine optionale Datei geladen:
+
+```text
+~/.config/ga-agent/.env
+```
+
+Beispiel:
+
+```dotenv
+# Optionale Umgebungsvariablen
+LANGSMITH_TRACING=false
+```
+
+- Bei `list` und `run` wird die Datei vor dem Import und der Initialisierung
+  der Agents in `process.env` geladen, auch ohne `config.json`.
+- Bereits gesetzte Umgebungsvariablen haben Vorrang, auch bei leerem Wert.
+- Fehlen Datei oder Verzeichnis, läuft die CLI unverändert weiter und legt
+  nichts an. Andere Lesefehler werden mit Exit-Code `1` gemeldet.
+- Eine `.env` im aktuellen Arbeitsverzeichnis wird nicht geladen.
+- `--help` liest weder `.env` noch `config.json`.
+- Das Format entspricht dem nativen Node.js-`.env`-Format und unterstützt
+  unter anderem Kommentare und Werte in Anführungszeichen.
+
 ## Aufbau
 
 ```text
 src/
   cli.ts                   # Argumente, Ausgabe und Exit-Code
-  config.ts                # Konfigurationsdatei, Prüfung und Standardwerte
+  config.ts                # .env, Konfigurationsdatei, Prüfung und Standardwerte
   agents/
     index.ts               # Statische Liste verfügbarer Agents
     task-collector.ts      # Kompilierter Dummy-LangGraph
@@ -102,7 +127,7 @@ tests/
 Die Ausführungskette ist:
 
 ```text
-CLI → Konfiguration → Agent-Auswahl → LangGraph → Ausgabe
+CLI → .env → Konfiguration → Agent-Auswahl → LangGraph → Ausgabe
 ```
 
 Der Agent führt tatsächlich den Graphen `START → dummy → END` aus.
