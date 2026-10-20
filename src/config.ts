@@ -14,8 +14,12 @@ const configSchema = z.strictObject({
 
 export type Config = z.infer<typeof configSchema>;
 
+export function getConfigDirectory(): string {
+  return join(homedir(), ".config", "ga-agent");
+}
+
 export function loadEnv(
-  path = join(homedir(), ".config", "ga-agent", ".env"),
+  path = join(getConfigDirectory(), ".env"),
 ): void {
   try {
     loadEnvFile(path);
@@ -31,7 +35,7 @@ export function loadEnv(
 }
 
 export async function loadConfig(
-  path = join(homedir(), ".config", "ga-agent", "config.json"),
+  path = join(getConfigDirectory(), "config.json"),
 ): Promise<Config> {
   let content: string;
 
