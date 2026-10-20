@@ -50,7 +50,7 @@ export async function runAgent(
   const activeSkill = skill === undefined ? undefined : await skills.load(skill);
 
   if (!model && !modelConfig) {
-    throw new Error(`Agent "${agent.name}": Keine Modellkonfiguration. agents.${agent.name}.model in config.json setzen.`);
+    throw new Error(`Agent "${agent.name}": Keine Modellkonfiguration. Modellprofil aus dem Frontmatter von agents/${agent.name}.md über config.models auflösen.`);
   }
   const chatModel = model ?? createChatModel(modelConfig!);
   const deadline = new AbortController();

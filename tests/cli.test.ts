@@ -1,15 +1,15 @@
 import { spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { installExampleAgent } from "./helpers/agent.js";
 
 const cliPath = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
 const modelFixture = fileURLToPath(new URL("./fixtures/llm-fetch.mjs", import.meta.url));
 const modelConfiguration = {
   models: { fast: { provider: "openrouter", model: "vendor/model-a" } },
-  agents: { "task-collector": { model: "fast" } },
 };
 const answer = "Aufgaben gesammelt mit vendor/model-a.\n";
 
@@ -47,8 +47,12 @@ describe("CLI", () => {
 
   async function writeConfig(content: string) {
     const directory = join(home, ".config", "ga-agent");
-    await mkdir(directory, { recursive: true });
+    await installExampleAgent(directory);
     await writeFile(join(directory, "config.json"), content);
+  }
+
+  async function writeAgent(settings: Parameters<typeof installExampleAgent>[1] = {}) {
+    await installExampleAgent(join(home, ".config", "ga-agent"), settings);
   }
 
   it("shows help without reading invalid configuration", async () => {
@@ -61,22 +65,32 @@ describe("CLI", () => {
     expect(result.stderr).toBe("");
   });
 
-  it("lists the default agent without creating user files", async () => {
+  it("lists no agents without creating user files", async () => {
     const result = run("list");
 
     expect(result.status).toBe(0);
-    expect(result.stdout).toBe("task-collector\taktiviert\n");
+    expect(result.stdout).toBe("");
     expect(result.stderr).toBe("");
     expect(await readdir(home)).toEqual([]);
   });
 
-  it("requires an explicit model assignment without creating user files", async () => {
+  it("has no built-in agent and does not create user files", async () => {
     const result = run("run", "task-collector");
 
     expect(result.status).toBe(1);
     expect(result.stdout).toBe("");
-    expect(result.stderr).toContain("agents.task-collector.model");
+    expect(result.stderr).toContain("Unbekannter Agent: task-collector");
     expect(await readdir(home)).toEqual([]);
+  });
+
+  it("lists installed agents without model profiles but requires a profile for run", async () => {
+    await writeAgent();
+    expect(runWithEnv(["list"], { OPENROUTER_API_KEY: "" }).stdout).toBe("task-collector\taktiviert\n");
+    const result = run("run", "task-collector");
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("models.fast");
+    expect(result.stderr).toContain("task-collector.md");
+    expect(await readdir(join(home, ".config", "ga-agent"))).toEqual(["agents"]);
   });
 
   it("selects the agent's named model and applies configuration changes without a build", async () => {
@@ -85,7 +99,8 @@ describe("CLI", () => {
       thorough: { provider: "openrouter", model: "vendor/model-b" },
     };
     for (const [model, id] of [["fast", "vendor/model-a"], ["thorough", "vendor/model-b"]]) {
-      await writeConfig(JSON.stringify({ models, agents: { "task-collector": { model } } }));
+      await writeConfig(JSON.stringify({ models }));
+      await writeAgent({ model });
       const result = run("run", "task-collector");
       expect(result.status).toBe(0);
       expect(result.stdout).toBe(`Aufgaben gesammelt mit ${id}.\n`);
@@ -141,7 +156,8 @@ describe("CLI", () => {
     expect(result.stderr).toBe("");
   });
 
-  it.each(["unknown", "__proto__"])("rejects an unknown requested skill %s", (name) => {
+  it.each(["unknown", "__proto__"])("rejects an unknown requested skill %s", async (name) => {
+    await writeConfig(JSON.stringify(modelConfiguration));
     const result = run("run", "task-collector", "--skill", name);
     expect(result.status).toBe(1);
     expect(result.stdout).toBe("");
@@ -177,6 +193,7 @@ describe("CLI", () => {
     await mkdir(directory, { recursive: true });
     const path = join(directory, "skills");
     await writeFile(path, "not a directory");
+    await writeConfig(JSON.stringify(modelConfiguration));
     const result = run("run", "task-collector");
     expect(result.status).toBe(1);
     expect(result.stdout).toBe("");
@@ -184,7 +201,7 @@ describe("CLI", () => {
   });
 
   it("checks agent activation before discovering skills", async () => {
-    await writeConfig('{"agents":{"task-collector":{"enabled":false}}}');
+    await writeAgent({ enabled: false });
     await writeFile(join(home, ".config", "ga-agent", "skills"), "not a directory");
     const result = run("run", "task-collector", "--skill", "tasks");
     expect(result.status).toBe(1);
@@ -234,9 +251,9 @@ describe("CLI", () => {
 
     expect(result.error).toBeUndefined();
     expect(result.status).toBe(args[0] === "list" ? 0 : 1);
-    expect(result.stdout).toBe(args[0] === "list" ? "task-collector\taktiviert\n" : "");
+    expect(result.stdout).toBe("");
     if (args[0] === "list") expect(result.stderr).toBe("");
-    else expect(result.stderr).toContain("agents.task-collector.model");
+    else expect(result.stderr).toContain("Unbekannter Agent: task-collector");
   });
 
   it.each([
@@ -266,7 +283,7 @@ describe("CLI", () => {
   });
 
   it("lists disabled agents", async () => {
-    await writeConfig('{"agents":{"task-collector":{"enabled":false}}}');
+    await writeAgent({ enabled: false });
     const result = run("list");
 
     expect(result.status).toBe(0);
@@ -274,7 +291,7 @@ describe("CLI", () => {
   });
 
   it("does not run disabled agents", async () => {
-    await writeConfig('{"agents":{"task-collector":{"enabled":false}}}');
+    await writeAgent({ enabled: false });
     const result = run("run", "task-collector");
 
     expect(result.status).toBe(1);
@@ -282,7 +299,8 @@ describe("CLI", () => {
     expect(result.stderr).toContain('Agent "task-collector" ist deaktiviert.');
   });
 
-  it.each(["unknown-agent", "__proto__"])("rejects unknown agent %s", (name) => {
+  it.each(["unknown-agent", "__proto__"])("rejects unknown agent %s", async (name) => {
+    await writeAgent();
     const result = run("run", name);
 
     expect(result.status).toBe(1);
@@ -303,6 +321,67 @@ describe("CLI", () => {
       expect(result.stderr).toContain(join(home, ".config", "ga-agent", "config.json"));
     },
   );
+
+  it("discovers a new Markdown agent and rereads its prompt without a build", async () => {
+    await writeConfig(JSON.stringify(modelConfiguration));
+    const path = join(home, ".config", "ga-agent", "agents", "new-agent.md");
+    for (const prompt of ["Erste Aufgabe.", "Geänderte Aufgabe."]) {
+      await writeFile(path, `---\nmodel: fast\nmcp: false\n---\n${prompt}\n`);
+      const listed = run("list");
+      expect(listed.status).toBe(0);
+      expect(listed.stdout).toBe("new-agent\taktiviert\ntask-collector\taktiviert\n");
+      const result = runWithEnv(["run", "new-agent"], { GA_TEST_LLM_MODE: "prompt" });
+      expect(result.status).toBe(0);
+      expect(result.stdout).toBe(`${prompt}\n`);
+      expect(result.stderr).toBe("");
+    }
+  });
+
+  it.each(["missing", "constructor", "toString"])("rejects unknown profile %s before starting MCP or the model", async (model) => {
+    const marker = join(home, "must-not-start");
+    await writeConfig(JSON.stringify({ mcpServers: { local: {
+      transport: "stdio", command: process.execPath,
+      args: ["-e", `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'started')`],
+    } } }));
+    await writeAgent({ model, mcp: true });
+    const result = runWithEnv(["run", "task-collector"], { GA_TEST_LLM_MARKER: marker });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(`Unbekannte Modellkonfiguration "${model}"`);
+    expect(result.stderr).toContain("task-collector.md");
+    await expect(access(marker)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("fails on invalid Markdown for list and run without invoking a model", async () => {
+    await writeConfig(JSON.stringify(modelConfiguration));
+    const path = join(home, ".config", "ga-agent", "agents", "broken.md");
+    await writeFile(path, "invalid");
+    const marker = join(home, "must-not-start");
+    for (const args of [["list"], ["run", "task-collector"]]) {
+      const result = runWithEnv(args, { GA_TEST_LLM_MARKER: marker });
+      expect(result.status).toBe(1);
+      expect(result.stdout).toBe("");
+      expect(result.stderr).toContain(path);
+    }
+    await expect(access(marker)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("does not read invalid Markdown for help", async () => {
+    await writeAgent();
+    await writeFile(join(home, ".config", "ga-agent", "agents", "broken.md"), "invalid");
+    for (const args of [["--help"], ["list", "--help"], ["run", "--help"], ["mcp", "login", "--help"]]) {
+      const result = run(...args);
+      expect(result.status).toBe(0);
+      expect(result.stderr).toBe("");
+    }
+  });
+
+  it("reports legacy agent configuration with a migration hint", async () => {
+    await writeConfig(JSON.stringify({ agents: { "task-collector": { model: "fast" } } }));
+    const result = run("list");
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("agents/<name>.md");
+    expect(result.stderr).toContain('Abschnitt "agents" aus config.json entfernen');
+  });
 
   it("rejects unknown commands", () => {
     const result = run("unknown-command");

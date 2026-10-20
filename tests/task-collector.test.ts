@@ -3,12 +3,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AIMessage } from "@langchain/core/messages";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { agents } from "../src/agents/index.js";
 import { runAgent } from "../src/agents/runtime.js";
-import { taskCollector } from "../src/agents/task-collector.js";
+import { loadExampleAgent } from "./helpers/agent.js";
 import { ScriptedModel } from "./helpers/model.js";
 
-const agent = agents[0];
+const agent = await loadExampleAgent();
 
 describe("task-collector", () => {
   let directory: string;
@@ -37,7 +36,8 @@ describe("task-collector", () => {
     })).toEqual({ message: "Die LLM-Anbindung funktioniert." });
     expect(model.requests).toHaveLength(1);
     expect(model.requests[0].messages.map((message) => message.type)).toEqual(["system", "human"]);
-    expect(model.requests[0].messages[1].text).toContain("LLM-Anbindung funktioniert");
+    expect(model.requests[0].messages[0].text).toBe(agent.instructions);
+    expect(model.requests[0].messages[1].text).toBe("Führe die beschriebenen Anweisungen aus.");
     expect(model.requests[0].options.tools).toBeUndefined();
     expect(bind).not.toHaveBeenCalled();
     expect(fetch).not.toHaveBeenCalled();
@@ -86,7 +86,7 @@ describe("task-collector", () => {
   });
 
   it("contains only START → model → END", async () => {
-    const graph = await taskCollector.getGraphAsync();
+    const graph = await agent.graph.getGraphAsync();
     expect(Object.keys(graph.nodes).sort()).toEqual(["__end__", "__start__", "model"]);
     expect(graph.edges).toHaveLength(2);
     expect(graph.edges).toEqual(expect.arrayContaining([

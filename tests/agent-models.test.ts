@@ -1,9 +1,10 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createAgentGraph } from "../src/agents/graph.js";
+import { loadAgents } from "../src/agents/index.js";
 import { runAgent } from "../src/agents/runtime.js";
-import { taskCollector } from "../src/agents/task-collector.js";
 import type { ModelConfig } from "../src/config.js";
 
 const profiles: Record<string, ModelConfig> = {
@@ -32,21 +33,30 @@ describe("per-agent models", () => {
     await rm(directory, { recursive: true, force: true });
   });
 
-  it("runs different agents concurrently with independently selected profiles", async () => {
-    // A second registered agent uses the same runtime/graph contract, not provider-specific code.
+  it("runs Markdown agents concurrently with independent profiles and prompts", async () => {
     const settings = [
-      { name: "task-collector", model: "fast" },
-      { name: "another-agent", model: "thorough" },
-      { name: "shared-profile-agent", model: "fast" },
+      { name: "task-collector", model: "fast", prompt: "Sammle Aufgaben." },
+      { name: "another-agent", model: "thorough", prompt: "Analysiere ausführlich." },
+      { name: "shared-profile-agent", model: "fast", prompt: "Fasse kurz zusammen." },
     ];
-    const results = await Promise.all(settings.map((agent) => runAgent({
-      name: agent.name, graph: taskCollector,
-    }, { skillsPath: directory, modelConfig: profiles[agent.model] })));
-    expect(results).toEqual([
-      { message: "vendor/model-a" }, { message: "vendor/model-b" }, { message: "vendor/model-a" },
-    ]);
+    await Promise.all(settings.map((agent) => writeFile(join(directory, `${agent.name}.md`),
+      `---\nmodel: ${agent.model}\nmcp: false\n---\n${agent.prompt}\n`)));
+    const agents = await loadAgents(directory);
+    const results = await Promise.all(agents.map((agent) => runAgent({
+      ...agent, graph: createAgentGraph(agent.instructions),
+    }, { skillsPath: join(directory, "skills"), modelConfig: profiles[agent.model] })));
+    expect(results).toEqual(agents.map((agent) => ({ message: profiles[agent.model].model })));
     const bodies = vi.mocked(fetch).mock.calls.map((call) => JSON.parse(call[1]!.body as string));
     expect(bodies.map((body) => body.max_tokens).sort()).toEqual([2048, 2048, 4096]);
+    for (const agent of settings) {
+      expect(bodies).toContainEqual(expect.objectContaining({
+        model: profiles[agent.model].model,
+        messages: [
+          { role: "system", content: agent.prompt },
+          { role: "user", content: "Führe die beschriebenen Anweisungen aus." },
+        ],
+      }));
+    }
     expect(JSON.stringify(bodies)).not.toContain("test-only");
   });
 
@@ -57,7 +67,7 @@ describe("per-agent models", () => {
       skillsPath: directory,
       modelConfig: withProfile ? profiles.fast : undefined,
       mcpServers: { local: { enabled: true, transport: "stdio", command: "/must-not-start", args: [] } },
-    })).rejects.toThrow(withProfile ? "OPENROUTER_API_KEY fehlt oder ist leer" : "agents.test.model");
+    })).rejects.toThrow(withProfile ? "OPENROUTER_API_KEY fehlt oder ist leer" : "agents/test.md");
     expect(invoke).not.toHaveBeenCalled();
     expect(fetch).not.toHaveBeenCalled();
   });

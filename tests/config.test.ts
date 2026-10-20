@@ -93,7 +93,6 @@ describe("loadConfig", () => {
     expect(await loadConfig(path)).toEqual({
       models: {},
       mcpServers: {},
-      agents: { "task-collector": { enabled: true } },
     });
     await expect(access(join(directory, "ga-agent"))).rejects.toMatchObject({
       code: "ENOENT",
@@ -102,20 +101,19 @@ describe("loadConfig", () => {
 
   it.each([
     {},
-    { agents: {} },
-    { agents: { "task-collector": {} } },
+    { models: {} },
+    { mcpServers: {} },
   ])("fills in omitted settings for %j", async (config) => {
     await writeConfig(JSON.stringify(config));
     expect(await loadConfig(path)).toEqual({
       models: {},
       mcpServers: {},
-      agents: { "task-collector": { enabled: true } },
     });
   });
 
-  it("reads an explicitly disabled agent", async () => {
-    await writeConfig('{"agents":{"task-collector":{"enabled":false}}}');
-    expect((await loadConfig(path)).agents["task-collector"].enabled).toBe(false);
+  it.each([{}, { "task-collector": { enabled: false, model: "fast" } }])("rejects legacy agent settings with a migration hint: %j", async (agents) => {
+    await writeConfig(JSON.stringify({ agents }));
+    await expect(loadConfig(path)).rejects.toThrow('Agent-Einstellungen nach agents/<name>.md verschieben und den Abschnitt "agents" aus config.json entfernen');
   });
 
   it.each([
@@ -134,18 +132,16 @@ describe("loadConfig", () => {
     );
   });
 
-  it("loads named models and the agent's model reference", async () => {
+  it("loads shared named models", async () => {
     await writeConfig(JSON.stringify({
       models: {
         fast: { provider: "openrouter", model: "vendor/model-a" },
         thorough: { provider: "openrouter", model: "vendor/model-b", maxOutputTokens: 4096, temperature: 0.5 },
       },
-      agents: { "task-collector": { model: "fast" } },
     }));
     const config = await loadConfig(path);
     expect(config.models.fast).toEqual({ provider: "openrouter", model: "vendor/model-a", maxOutputTokens: 2048 });
     expect(config.models.thorough).toEqual({ provider: "openrouter", model: "vendor/model-b", maxOutputTokens: 4096, temperature: 0.5 });
-    expect(config.agents["task-collector"]).toEqual({ enabled: true, model: "fast" });
   });
 
   it.each([
@@ -161,11 +157,6 @@ describe("loadConfig", () => {
     const error = await loadConfig(path).catch((error: Error) => error);
     expect(String(error)).toContain("models.test");
     expect(String(error)).not.toContain("SECRET");
-  });
-
-  it.each(["missing", "__proto__", "constructor"])("rejects unknown model reference %s", async (model) => {
-    await writeConfig(JSON.stringify({ agents: { "task-collector": { model } } }));
-    await expect(loadConfig(path)).rejects.toThrow("agents.task-collector.model");
   });
 
   it("loads global MCP servers and transport defaults", async () => {
