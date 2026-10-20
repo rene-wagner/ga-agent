@@ -26,8 +26,10 @@ program
   .command("run")
   .description("Einen Agent ausführen")
   .argument("<name>", "Name des Agents")
-  .action(async (name: string) => {
+  .option("--skill <name>", "Einen installierten Skill explizit aktivieren")
+  .action(async (name: string, options: { skill?: string }) => {
     const { agents } = await import("./agents/index.js");
+    const { runAgent } = await import("./agents/runtime.js");
     const agent = agents.find((entry) => entry.name === name);
     if (!agent) {
       throw new Error(`Unbekannter Agent: ${name}. Verfügbare Agents: ${agents.map((entry) => entry.name).join(", ")}`);
@@ -38,7 +40,7 @@ program
       throw new Error(`Agent "${name}" ist deaktiviert.`);
     }
 
-    const result = await agent.graph.invoke({});
+    const result = await runAgent(agent, { skill: options.skill });
     console.log(result.message);
   });
 

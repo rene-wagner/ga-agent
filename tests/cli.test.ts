@@ -68,6 +68,78 @@ describe("CLI", () => {
     expect(await readdir(home)).toEqual([]);
   });
 
+  it("activates a skill from the user configuration directory", async () => {
+    const path = join(home, ".config", "ga-agent", "skills", "tasks");
+    await mkdir(path, { recursive: true });
+    await writeFile(join(path, "SKILL.md"), "---\nname: tasks\ndescription: Collect tasks.\n---\nCollect tasks from notes.");
+
+    const defaultRun = run("run", "task-collector");
+    expect(defaultRun.status).toBe(0);
+    expect(defaultRun.stdout).toBe("task-collector: Dummy erfolgreich ausgeführt.\n");
+    expect(defaultRun.stderr).toBe("");
+
+    const result = run("run", "task-collector", "--skill", "tasks");
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe('task-collector: Dummy erfolgreich ausgeführt. Skill "tasks" geladen.\n');
+    expect(result.stderr).toBe("");
+  });
+
+  it.each(["unknown", "__proto__"])("rejects an unknown requested skill %s", (name) => {
+    const result = run("run", "task-collector", "--skill", name);
+    expect(result.status).toBe(1);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toContain(`Unbekannter oder ungültiger Skill: ${name}`);
+  });
+
+  it("warns about invalid skills and fails when one is explicitly requested", async () => {
+    const path = join(home, ".config", "ga-agent", "skills", "broken");
+    await mkdir(path, { recursive: true });
+    await writeFile(join(path, "SKILL.md"), "invalid");
+    const defaultRun = run("run", "task-collector");
+    expect(defaultRun.status).toBe(0);
+    expect(defaultRun.stderr).toContain(`Warnung: Ungültiger Skill in ${join(path, "SKILL.md")}`);
+
+    const result = run("run", "task-collector", "--skill", "broken");
+    expect(result.status).toBe(1);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toContain("Unbekannter oder ungültiger Skill: broken");
+  });
+
+  it.each([["list"], ["--help"], ["run", "--help"]])("does not discover skills for %j", async (...args) => {
+    const directory = join(home, ".config", "ga-agent");
+    await mkdir(directory, { recursive: true });
+    await writeFile(join(directory, "skills"), "not a directory");
+    const result = run(...args);
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe("");
+  });
+
+  it("reports skill root read failures when running an enabled agent", async () => {
+    const directory = join(home, ".config", "ga-agent");
+    await mkdir(directory, { recursive: true });
+    const path = join(directory, "skills");
+    await writeFile(path, "not a directory");
+    const result = run("run", "task-collector");
+    expect(result.status).toBe(1);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toContain(`Skills in ${path} konnten nicht geladen werden.`);
+  });
+
+  it("checks agent activation before discovering skills", async () => {
+    await writeConfig('{"agents":{"task-collector":{"enabled":false}}}');
+    await writeFile(join(home, ".config", "ga-agent", "skills"), "not a directory");
+    const result = run("run", "task-collector", "--skill", "tasks");
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('Agent "task-collector" ist deaktiviert.');
+    expect(result.stderr).not.toContain("Skills in");
+  });
+
+  it("requires a value for --skill", () => {
+    const result = run("run", "task-collector", "--skill");
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("argument missing");
+  });
+
   it.each([
     ["list"],
     ["run", "task-collector"],
