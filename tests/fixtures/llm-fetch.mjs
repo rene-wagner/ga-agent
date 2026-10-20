@@ -16,9 +16,10 @@ globalThis.fetch = async (input, init) => {
       return Response.json({ error: { message: "SECRET provider response" } }, { status: 401 });
     }
     const body = JSON.parse(init.body);
+    const content = process.env.GA_TEST_LLM_MODE === "prompt" ? body.messages[0].content : `Aufgaben gesammelt mit ${body.model}.`;
     return Response.json({
       id: "test-completion", model: body.model,
-      choices: [{ index: 0, finish_reason: "stop", message: { role: "assistant", content: `Aufgaben gesammelt mit ${body.model}.` } }],
+      choices: [{ index: 0, finish_reason: "stop", message: { role: "assistant", content } }],
       usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
     });
   }

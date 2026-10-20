@@ -3,10 +3,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runAgent, type AgentContext } from "../src/agents/runtime.js";
-import { taskCollector } from "../src/agents/task-collector.js";
+import { loadExampleAgent } from "./helpers/agent.js";
 import { discoverSkills } from "../src/skills/index.js";
 import { createSkillSupport } from "../src/skills/tools.js";
 import { ScriptedModel } from "./helpers/model.js";
+
+const { graph: taskCollector } = await loadExampleAgent();
 
 describe("agent skill support", () => {
   let directory: string;

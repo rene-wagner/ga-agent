@@ -61,18 +61,6 @@ const modelSchema = z.strictObject({
 const configSchema = z.strictObject({
   models: z.record(modelName, modelSchema).default({}),
   mcpServers: z.record(z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,31}$/), mcpServerSchema).default({}),
-  agents: z.strictObject({
-    "task-collector": z.strictObject({
-      enabled: z.boolean().default(true),
-      model: modelName.optional(),
-    }).prefault({}),
-  }).prefault({}),
-}).superRefine((config, context) => {
-  for (const [name, agent] of Object.entries(config.agents)) {
-    if (agent.model !== undefined && !Object.hasOwn(config.models, agent.model)) {
-      context.addIssue({ code: "custom", message: "Unbekannte Modellkonfiguration", path: ["agents", name, "model"] });
-    }
-  }
 });
 
 export type Config = z.infer<typeof configSchema>;
@@ -140,8 +128,8 @@ export async function loadConfig(
     // Zod/JSON parser messages may contain credential values from the input.
     const detail = error instanceof z.ZodError
       ? error.issues.map((issue) => {
-        const detail = issue.code === "custom" && issue.path[0] === "agents"
-          ? "Unbekannte Modellkonfiguration"
+        const detail = issue.code === "unrecognized_keys" && issue.path.length === 0 && issue.keys.includes("agents")
+          ? 'Agent-Einstellungen nach agents/<name>.md verschieben und den Abschnitt "agents" aus config.json entfernen'
           : issue.code;
         return `${issue.path.join(".") || "config"}: ${detail}`;
       }).join("; ")

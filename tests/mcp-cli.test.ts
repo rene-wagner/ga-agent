@@ -7,13 +7,13 @@ import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CredentialStore } from "../src/mcp/credentials.js";
 import { startMcpHttp } from "./helpers/mcp-http.js";
+import { installExampleAgent } from "./helpers/agent.js";
 
 const execute = promisify(execFile);
 const cliPath = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
 const modelFixture = fileURLToPath(new URL("./fixtures/llm-fetch.mjs", import.meta.url));
 const modelConfiguration = {
   models: { fast: { provider: "openrouter", model: "vendor/model-a" } },
-  agents: { "task-collector": { model: "fast" } },
 };
 
 describe("MCP CLI", () => {
@@ -23,7 +23,7 @@ describe("MCP CLI", () => {
   beforeEach(async () => {
     home = await mkdtemp(join(tmpdir(), "ga-agent-mcp-cli-"));
     configDirectory = join(home, ".config", "ga-agent");
-    await mkdir(configDirectory, { recursive: true });
+    await installExampleAgent(configDirectory);
     service = await startMcpHttp();
   });
   afterEach(async () => {
@@ -55,7 +55,10 @@ describe("MCP CLI", () => {
   await fetch(response.headers.get('location'));
 })().catch(() => { process.exitCode = 1; });
 `, { mode: 0o755 });
+    const brokenAgent = join(configDirectory, "agents", "broken.md");
+    await writeFile(brokenAgent, "invalid");
     const login = await run("mcp", "login", "remote");
+    await rm(brokenAgent);
     expect(login.stdout).toBe('MCP-Server "remote": angemeldet.\n');
     expect(login.stderr).toContain("OAuth im Browser öffnen:");
     const store = new CredentialStore("remote", service.config, join(configDirectory, "auth"));
@@ -65,7 +68,9 @@ describe("MCP CLI", () => {
     await store.withLock(() => store.write(credentials));
     const results = await Promise.all([run("run", "task-collector"), run("run", "task-collector")]);
     for (const result of results) expect(result.stdout).toBe("Aufgaben gesammelt mit vendor/model-a.\n");
+    await writeFile(brokenAgent, "invalid");
     expect((await run("mcp", "logout", "remote")).stdout).toBe('MCP-Server "remote": abgemeldet.\n');
+    await rm(brokenAgent);
     expect(await readdir(join(configDirectory, "auth"))).toEqual([]);
     expect(service.counts).toMatchObject({ registration: 1, exchange: 1, refresh: 0, revocation: 1, calls: 0 });
     expect((await run("run", "task-collector")).stdout).toContain("Aufgaben gesammelt");
@@ -76,7 +81,7 @@ describe("MCP CLI", () => {
     for (const args of [["list"], ["--help"], ["mcp", "--help"], ["mcp", "login", "--help"]]) {
       expect((await run(...args)).stderr).toBe("");
     }
-    expect(await readdir(configDirectory)).toEqual(["config.json"]);
+    expect(await readdir(configDirectory)).toEqual(["agents", "config.json"]);
     expect(service.counts.registration).toBe(0);
   });
 
@@ -88,17 +93,19 @@ describe("MCP CLI", () => {
     for (const name of ["unknown", "__proto__", "local", "disabled"]) {
       await expect(run("mcp", "login", name)).rejects.toMatchObject({ code: 1 });
     }
-    expect(await readdir(configDirectory)).toEqual(["config.json"]);
+    expect(await readdir(configDirectory)).toEqual(["agents", "config.json"]);
   });
 
   it("checks agent activation before MCP and skips disabled servers", async () => {
     await writeFile(join(configDirectory, "config.json"), JSON.stringify({
-      agents: { "task-collector": { enabled: false } }, mcpServers: { remote: service.config },
+      mcpServers: { remote: service.config },
     }));
+    await installExampleAgent(configDirectory, { enabled: false });
     await expect(run("run", "task-collector")).rejects.toMatchObject({ stderr: expect.stringContaining("deaktiviert") });
+    await installExampleAgent(configDirectory);
     await writeFile(join(configDirectory, "config.json"), JSON.stringify({ ...modelConfiguration, mcpServers: { remote: { ...service.config, enabled: false } } }));
     expect((await run("run", "task-collector")).stdout).toContain("Aufgaben gesammelt");
-    expect(await readdir(configDirectory)).toEqual(["config.json"]);
+    expect(await readdir(configDirectory)).toEqual(["agents", "config.json"]);
   });
 
   it.each([["SIGINT", 130], ["SIGTERM", 143]] as const)("handles %s during a model request without starting MCP", async (signal, code) => {

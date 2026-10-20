@@ -27,11 +27,12 @@ program
   .command("list")
   .description("Verfügbare Agents und ihren Aktivierungsstatus anzeigen")
   .action(async () => {
-    const { agents } = await import("./agents/index.js");
-    const config = await loadConfig();
+    const { loadAgents } = await import("./agents/index.js");
+    await loadConfig();
+    const agents = await loadAgents();
 
     for (const agent of agents) {
-      const status = config.agents[agent.name].enabled ? "aktiviert" : "deaktiviert";
+      const status = agent.enabled ? "aktiviert" : "deaktiviert";
       console.log(`${agent.name}\t${status}`);
     }
   });
@@ -42,22 +43,26 @@ program
   .argument("<name>", "Name des Agents")
   .option("--skill <name>", "Einen installierten Skill explizit aktivieren")
   .action(async (name: string, options: { skill?: string }) => {
-    const { agents } = await import("./agents/index.js");
+    const { loadAgents } = await import("./agents/index.js");
     const { runAgent } = await import("./agents/runtime.js");
+    const agents = await loadAgents();
     const agent = agents.find((entry) => entry.name === name);
     if (!agent) {
       throw new Error(`Unbekannter Agent: ${name}. Verfügbare Agents: ${agents.map((entry) => entry.name).join(", ")}`);
     }
 
     const config = await loadConfig();
-    const agentConfig = config.agents[agent.name];
-    if (!agentConfig.enabled) {
+    if (!agent.enabled) {
       throw new Error(`Agent "${name}" ist deaktiviert.`);
     }
-
-    const result = await withShutdown((signal) => runAgent(agent, {
+    const modelConfig = Object.hasOwn(config.models, agent.model) ? config.models[agent.model] : undefined;
+    if (!modelConfig) {
+      throw new Error(`Agent in ${agent.path}: Unbekannte Modellkonfiguration "${agent.model}". models.${agent.model} in config.json anlegen oder model im Frontmatter ändern.`);
+    }
+    const { createAgentGraph } = await import("./agents/graph.js");
+    const result = await withShutdown((signal) => runAgent({ ...agent, graph: createAgentGraph(agent.instructions) }, {
       skill: options.skill,
-      modelConfig: agentConfig.model === undefined ? undefined : config.models[agentConfig.model],
+      modelConfig,
       mcpServers: config.mcpServers,
       signal,
     }));

@@ -1,9 +1,10 @@
 # ga-agent
 
-Node.js-CLI zum Ausführen von LangGraph-Agents. Enthalten ist bislang
-der LLM-Agent **task-collector** als einfacher Verbindungstest ohne Tools.
+Node.js-CLI zum Ausführen von LangGraph-Agents. Agents werden als Markdown-Dateien
+unter `~/.config/ga-agent/agents/` definiert und verwenden einen gemeinsamen Graphen.
+Der Beispiel-Agent **task-collector** ist ein einfacher Verbindungstest ohne Tools.
 Die Infrastruktur für lokale Agent Skills und globale MCP-Server einschließlich
-interaktivem OAuth bleibt für weitere Agents verfügbar. Er verwendet OpenRouter;
+interaktivem OAuth bleibt verfügbar. Die Modellanbindung verwendet OpenRouter;
 benannte Modellkonfigurationen lassen sich jedem Agenten einzeln zuordnen.
 Für `run` sind eine Modellzuordnung und ein API-Key erforderlich. `list`, Hilfe
 und MCP-Anmeldung funktionieren weiterhin ohne LLM-Zugangsdaten.
@@ -17,6 +18,8 @@ und MCP-Anmeldung funktionieren weiterhin ohne LLM-Zugangsdaten.
 
 ```bash
 npm ci
+mkdir -p ~/.config/ga-agent/agents
+cp examples/agents/task-collector.md ~/.config/ga-agent/agents/
 npm run dev -- --help
 npm run dev -- list
 npm run dev -- run task-collector
@@ -46,7 +49,8 @@ ga-agent run task-collector
 ```
 
 Nach Änderungen am Quellcode ist für die gebaute CLI erneut
-`npm run build` nötig. Zum Entfernen der Verknüpfung:
+`npm run build` nötig. Neue oder geänderte Markdown-Agents werden dagegen beim
+nächsten Aufruf ohne Build geladen. Zum Entfernen der Verknüpfung:
 `npm uninstall --global ga-agent`.
 
 ### Kommandos
@@ -71,30 +75,16 @@ Die optionale JSON-Datei liegt unter:
 ~/.config/ga-agent/config.json
 ```
 
-Beispiel mit den Standardwerten (noch ohne ausführbare Modellzuordnung):
+Die Standardwerte sind `{"models": {}, "mcpServers": {}}`; auch `{}` ist gültig.
+Agent-Definitionen und Prompts stehen nicht in dieser Datei.
 
-```json
-{
-  "models": {},
-  "agents": {
-    "task-collector": {
-      "enabled": true
-    }
-  },
-  "mcpServers": {}
-}
-```
-
-- Ohne Datei ist `task-collector` aktiviert.
-- Ausgelassene Einstellungen werden mit Standardwerten ergänzt; auch `{}` ist gültig.
-- Mit `"enabled": false` wird der Agent deaktiviert.
+- Ausgelassene Einstellungen werden mit Standardwerten ergänzt.
 - Ungültiges JSON, falsche Datentypen und unbekannte Einstellungen werden
   mit einer Fehlermeldung abgewiesen.
-- Die CLI legt keine Konfigurationsdatei automatisch an. Ein expliziter OAuth-Login
-  erstellt bei Bedarf das separate Auth-Verzeichnis.
-- Ohne Modellzuordnung bleiben `list` und MCP-Anmeldung möglich; `run` meldet
-  die fehlende Einstellung. Einen Dummy-Fallback gibt es nicht.
-- Prompts werden im Agenten definiert, nicht in der Konfigurationsdatei.
+- Die CLI legt keine Konfigurationsdatei oder Agent-Dateien automatisch an.
+  Ein expliziter OAuth-Login erstellt bei Bedarf das separate Auth-Verzeichnis.
+- Ohne Modellprofile bleiben `list` und MCP-Anmeldung möglich; `run` meldet
+  ein fehlendes Profil. Einen Dummy-Fallback gibt es nicht.
 
 ### Modelle und Zuordnung pro Agent
 
@@ -110,12 +100,6 @@ Beispiel mit den Standardwerten (noch ohne ausführbare Modellzuordnung):
       "provider": "openrouter",
       "model": "anthropic/claude-sonnet-4.5",
       "maxOutputTokens": 4096
-    }
-  },
-  "agents": {
-    "task-collector": {
-      "enabled": true,
-      "model": "fast"
     }
   },
   "mcpServers": {}
@@ -134,16 +118,81 @@ Verwendung im [OpenRouter-Modellkatalog](https://openrouter.ai/models) prüfen.
 - `maxOutputTokens`: positive Ganzzahl, standardmäßig `2048`, pro Modellanfrage.
 - `temperature`: optional, Zahl zwischen `0` und `2`; ohne Angabe gilt das
   Verhalten des gewählten Modells. Nicht jedes Modell unterstützt diese Option.
-- `agents.<name>.model` verweist auf eine vorhandene benannte Konfiguration.
+- Das Feld `model` im Markdown-Frontmatter verweist auf eine benannte Konfiguration.
   Mehrere Agents können dieselbe Konfiguration teilen oder unterschiedliche wählen.
   Es gibt kein globales Standardmodell und keinen automatischen Modellwechsel.
-- Aktuell ist nur `task-collector` registriert. Bei einem weiteren Agenten dessen
-  Eintrag unter `agents` mit eigener `model`-Referenz ergänzen; unbekannte Agents
-  werden weiterhin abgewiesen. Ein Konfigurationseintrag allein erstellt keinen Agenten.
-- Ein Wechsel von `"fast"` auf `"thorough"` wirkt beim nächsten Aufruf ohne Build.
-  Nur die ausgewählte Konfiguration wird initialisiert und benötigt Zugangsdaten.
+- Ein Wechsel von `model: fast` auf `model: thorough` wirkt beim nächsten Aufruf
+  ohne Build. Nur das ausgewählte Profil wird initialisiert und benötigt Zugangsdaten.
 - API-Keys und frei konfigurierbare API-Endpunkte sind in JSON nicht erlaubt.
   Alle OpenRouter-Konfigurationen verwenden `OPENROUTER_API_KEY` aus der Umgebung.
+
+### Agents als Markdown
+
+Jeder Agent ist eine unmittelbare `.md`-Datei unter `~/.config/ga-agent/agents/`:
+
+```text
+~/.config/ga-agent/
+  config.json
+  .env
+  agents/
+    task-collector.md
+    another-agent.md
+```
+
+Beispiel für `task-collector.md`, auch unter
+[`examples/agents/task-collector.md`](examples/agents/task-collector.md):
+
+```markdown
+---
+description: Prüft die LLM-Anbindung.
+model: fast
+enabled: true
+mcp: false
+---
+
+Du bist der task-collector. Antworte kurz und auf Deutsch.
+
+Bestätige bitte kurz, dass die LLM-Anbindung funktioniert.
+```
+
+- Der Dateiname ohne `.md` bestimmt den Agent-Namen: 1–64 ASCII-Buchstaben/Ziffern,
+  `_` oder `-`, beginnend mit Buchstabe/Ziffer; Groß-/Kleinschreibung wird beachtet.
+  Ein zusätzliches `name`-Feld ist nicht erlaubt.
+- `model` ist ein Pflichtfeld mit dem Namen eines Modellprofils. Dessen Existenz
+  wird erst bei `run` geprüft, nicht bei `list`.
+- `description` ist ein optionaler, nicht leerer String.
+- `enabled` ist optional und standardmäßig `true`; `false` verhindert die Ausführung.
+- `mcp` ist optional und standardmäßig `true`, entsprechend dem bisherigen Runner.
+  `false` überspringt alle MCP-Verbindungen. Für den aktuellen Graphen ist `false`
+  empfohlen: Er bindet keine Tools, auch nicht bei `mcp: true`.
+- Der nicht leere Markdown-Inhalt wird als Systemanweisung gesendet, gefolgt vom
+  neutralen Startimpuls „Führe die beschriebenen Anweisungen aus.“. Die konkrete
+  Aufgabe gehört deshalb vollständig ins Markdown. Es gibt keine Template- oder
+  JavaScript-Auswertung und keine automatische Skill-Einbindung.
+- `list` und `run` laden die unmittelbaren `.md`-Dateien jedes Mal neu und sortiert.
+  Unterverzeichnisse und andere Dateitypen werden nicht durchsucht. Neue Agents
+  benötigen weder eine Registrierung im Code noch einen Build.
+- Ein fehlendes oder leeres Agents-Verzeichnis ergibt eine leere Liste. Es gibt
+  keinen eingebauten Standard-Agenten und keine automatische Dateierstellung.
+- Ungültiges Frontmatter, unbekannte Felder, falsche Datentypen, leere Prompts und
+  Lesefehler brechen `list` beziehungsweise `run` mit Dateipfad und Exit-Code `1` ab.
+  Datei-Symlinks dürfen nicht aus dem Agents-Verzeichnis herausführen.
+- Hilfe und `mcp login/logout` lesen keine Agent-Dateien. `list` initialisiert weder
+  Modelle noch MCP-Verbindungen und benötigt keinen API-Key.
+- Agent-Dateien sind vertrauenswürdige Systemanweisungen und werden an den
+  Modellanbieter übertragen. Nur vertrauenswürdige Definitionen installieren.
+
+### Migration bisheriger Agent-Einstellungen
+
+Der frühere Abschnitt `agents` in `config.json` wird mit einem Migrationshinweis
+abgewiesen; es gibt keinen Kompatibilitätslayer und keine JSON-Overrides.
+
+1. Für jeden bisherigen Agenten eine Markdown-Datei unter `agents/` anlegen.
+   Für den bisherigen Verbindungstest die Beispiel-Datei kopieren.
+2. Die bisherige Modellreferenz und Aktivierung als `model` und `enabled`
+   ins Frontmatter übernehmen; der Beispiel-Agent behält `mcp: false`.
+3. Den Abschnitt `agents` aus `config.json` entfernen. `models`, `mcpServers`
+   und die Zugangsdaten in `.env` bleiben unverändert.
 
 ### LLM-Laufzeit und Sicherheitsgrenzen
 
@@ -159,7 +208,8 @@ Verwendung im [OpenRouter-Modellkatalog](https://openrouter.ai/models) prüfen.
   Modellfehler werden ohne ungefilterte Providerantworten oder Keys ausgegeben.
 - Anfragen werden an OpenRouter und den ausgewählten Modellanbieter übertragen
   und können Kosten verursachen. Der vereinfachte `task-collector` sendet dabei
-  ausschließlich seinen festen Test-Prompt, keine Skill-Inhalte oder MCP-Ergebnisse.
+  ausschließlich seine Markdown-Anweisungen und den neutralen Startimpuls,
+  keine Skill-Inhalte oder MCP-Ergebnisse.
 - Die MCP-Infrastruktur bietet für andere Agents keine allgemeine Sandbox:
   Nur vertrauenswürdige Server mit geeigneten Berechtigungen bereitstellen.
 - LangSmith-Tracing kann bei Aktivierung ebenfalls Prompts und Ergebnisse übertragen.
@@ -238,7 +288,7 @@ konfiguriert. Unterstützt werden lokale stdio-Prozesse und Streamable HTTP:
 
 ### Laufzeit und Fehlerverhalten
 
-Agents können in ihrer `AgentDefinition` mit `mcp: false` auf MCP verzichten.
+Agents können im Markdown-Frontmatter mit `mcp: false` auf MCP verzichten.
 Der `task-collector` verwendet diese Einstellung und überspringt alle Server,
 auch bei fehlender OAuth-Anmeldung oder nicht erreichbaren Endpunkten.
 Für andere Agents verbindet der gemeinsame Runner aktivierte Server erst nach
@@ -405,17 +455,18 @@ npm run dev -- run task-collector --skill task-collection
 Dafür müssen Modell und API-Key eingerichtet sein. Der gemeinsame Runner lädt
 und validiert den explizit gewählten Skill im Laufzeitkontext. Der vereinfachte
 `task-collector` verwendet ihn vorerst nicht und sendet weiterhin nur seinen
-festen Test-Prompt. Skill-Katalog, Anweisungen und Referenz-Tools bleiben für
+Markdown-Prompt. Skill-Katalog, Anweisungen und Referenz-Tools bleiben für
 zukünftige Tool-Agents über die gemeinsamen Helper verfügbar. Skills sind keine
 ausführbaren JavaScript-Plugins.
 
 ### Anbindung zukünftiger Agents
 
-Neue Agents verwenden `AgentContext` aus `src/agents/runtime.ts` als
-LangGraph-Kontext-Schema und werden in `src/agents/index.ts` registriert.
-Die Registry prüft den gemeinsamen Vertrag über `AgentDefinition`. Außerdem wird
-der Agent im strikten `agents`-Schema in `src/config.ts` ergänzt, einschließlich
-optionalem `model`-Verweis. Die CLI löst diesen Verweis über `config.models` auf.
+Neue Agents benötigen lediglich eine Markdown-Datei im Konfigurationsverzeichnis.
+`loadAgents()` aus `src/agents/index.ts` liefert validierte Definitionen. Die CLI
+löst deren `model`-Referenz über `config.models` auf und erzeugt mit
+`createAgentGraph(instructions)` aus `src/agents/graph.ts` den gemeinsamen Graphen.
+Der interne `AgentDefinition`-Vertrag bleibt für die Laufzeit und isolierte Tests
+bestehen; er ist keine statische Registrierung von CLI-Agents.
 `runAgent` stellt pro Ausführung über `runtime.context` bereit:
 
 - `model`: das für diesen Lauf erzeugte LangChain-Chatmodell, unabhängig vom Provider.
@@ -444,8 +495,9 @@ Der Helper kombiniert die bestehende Skill-Unterstützung mit MCP und liefert:
 `createSkillSupport` aus `src/skills/tools.ts` bleibt als reiner Skill-Helper verfügbar.
 
 Ein Tool-Graph ergänzt damit seinen Prompt, bindet die Tools an das Modell und
-führt deren Aufrufe im Graphen aus. Der vereinfachte `task-collector.ts` enthält
-stattdessen nur einen Modellknoten ohne Tool-Binding. Modell, Skills und MCP-Zugriff
+führt deren Aufrufe im Graphen aus. Der gemeinsame Markdown-Agent-Graph enthält
+stattdessen nur einen Modellknoten ohne Tool-Binding. Eine Tool-Schleife ist noch
+nicht implementiert. Modell, Skills und MCP-Zugriff
 liegen im Laufzeitkontext, nicht im fachlichen Graph-Zustand.
 
 Weitere Provider werden in `src/llm/` mit eigenem Adapter ergänzt und in der
@@ -471,10 +523,10 @@ src/
   cli.ts                   # Argumente, Ausgabe und Exit-Code
   config.ts                # .env, Konfigurationsdatei, Prüfung und Standardwerte
   agents/
-    index.ts               # Statische Liste verfügbarer Agents
+    index.ts               # Markdown-Discovery und Frontmatter-Validierung
+    graph.ts               # Gemeinsamer einzelner Modellaufruf ohne Tools
     runtime.ts             # Gemeinsamer Runner und LangGraph-Kontext
     tools.ts               # Gemeinsame Skill- und MCP-Tool-Liste
-    task-collector.ts      # Einzelner Modellaufruf ohne Tools
   llm/
     index.ts               # Zentrale Provider-unabhängige Modell-Factory
     openrouter.ts          # OpenRouter, Request-Limit und sichere Fehler
@@ -486,7 +538,8 @@ src/
     index.ts               # Discovery, Formatprüfung und Dateizugriff
     tools.ts               # Prompt-Katalog und LangChain-Tools
 examples/
-  config.json              # Benannte Modelle und Agent-Zuordnung
+  config.json              # Benannte Modelle und globale MCP-Konfiguration
+  agents/task-collector.md  # Beispiel-Agent mit Modellprofilreferenz
   .env.example             # API-Key-Vorlage, keine echten Zugangsdaten
   skills/task-collection/  # Beispiel-Skill mit Referenzdatei
 tests/
@@ -494,6 +547,7 @@ tests/
   config.test.ts
   llm.test.ts
   agent-models.test.ts
+  agents.test.ts
   task-collector.test.ts
   skills.test.ts
   agent-skills.test.ts
@@ -533,8 +587,10 @@ OpenRouter-HTTP-Antworten geprüft, auch in separaten CLI-Prozessen. Externe
 Anfragen sind dabei blockiert; LangSmith-Tracing ist in den Tests deaktiviert.
 Die MCP-/OAuth-Tests verwenden ausschließlich lokale Testserver und einen
 simulierten Browserstart, keine externen Dienste, echten Logins oder API-Keys.
-Geprüft werden Modellzuordnung, genau ein Modellaufruf ohne Tool-Binding und
-MCP-Verbindungen für den `task-collector`, begrenzte Retries, Timeouts, sichere
+Geprüft werden Markdown-Discovery, Validierung, Migration, neue Agents ohne Build,
+Prompt- und Modellwechsel sowie parallele Agents mit isolierten Einstellungen.
+Hinzu kommen genau ein Modellaufruf ohne Tool-Binding oder MCP-Verbindungen für
+den `task-collector`, begrenzte Retries, Timeouts, sichere
 Fehlermeldungen und SIGINT/SIGTERM. Die MCP-Infrastruktur wird separat geprüft,
 einschließlich Cleanup bei Modellfehlern und Abbruch.
 
