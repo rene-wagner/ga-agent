@@ -91,6 +91,7 @@ describe("loadConfig", () => {
 
   it("uses defaults without creating a configuration directory", async () => {
     expect(await loadConfig(path)).toEqual({
+      mcpServers: {},
       agents: { "task-collector": { enabled: true } },
     });
     await expect(access(join(directory, "ga-agent"))).rejects.toMatchObject({
@@ -105,6 +106,7 @@ describe("loadConfig", () => {
   ])("fills in omitted settings for %j", async (config) => {
     await writeConfig(JSON.stringify(config));
     expect(await loadConfig(path)).toEqual({
+      mcpServers: {},
       agents: { "task-collector": { enabled: true } },
     });
   });
@@ -128,6 +130,40 @@ describe("loadConfig", () => {
     await expect(loadConfig(path)).rejects.toThrow(
       `Ungültige Konfiguration in ${path}`,
     );
+  });
+
+  it("loads global MCP servers and transport defaults", async () => {
+    await writeConfig(JSON.stringify({ mcpServers: {
+      local: { transport: "stdio", command: "node", env: { TOKEN: "${TOKEN}" } },
+      remote: { transport: "http", url: "https://example.com/mcp", auth: { type: "oauth", clientId: "client", scopes: ["read"], redirectPort: 8090 } },
+      disabled: { enabled: false, transport: "stdio", command: "missing" },
+    } }));
+    const { mcpServers } = await loadConfig(path);
+    expect(mcpServers.local).toMatchObject({ enabled: true, args: [], env: { TOKEN: "${TOKEN}" } });
+    expect(mcpServers.remote).toMatchObject({ enabled: true, auth: { type: "oauth", clientId: "client" } });
+    expect(mcpServers.disabled.enabled).toBe(false);
+  });
+
+  it.each([
+    { transport: "stdio", command: "node", url: "https://example.com" },
+    { transport: "http", url: "file:///secret" },
+    { transport: "http", url: "https://user:SECRET@example.com" },
+    { transport: "http", url: "https://example.com", command: "node" },
+    { transport: "http", url: "https://example.com", auth: { type: "oauth", redirectPort: 0 } },
+    { transport: "http", url: "https://example.com", auth: { type: "oauth" }, headers: { aUtHoRiZaTiOn: "SECRET" } },
+    { transport: "http", url: "https://example.com", auth: { type: "oauth", scopes: ["bad scope"] } },
+    { transport: "stdio", command: "node", auth: { type: "oauth" } },
+  ])("rejects invalid MCP configuration without exposing secrets: %j", async (server) => {
+    await writeConfig(JSON.stringify({ mcpServers: { service: server } }));
+    const error = await loadConfig(path).catch((error: Error) => error);
+    expect(error).toBeInstanceOf(Error);
+    expect(String(error)).toContain("Ungültige Konfiguration");
+    expect(String(error)).not.toContain("SECRET");
+  });
+
+  it("rejects invalid server names", async () => {
+    await writeConfig(JSON.stringify({ mcpServers: { "../bad": { transport: "stdio", command: "node" } } }));
+    await expect(loadConfig(path)).rejects.toThrow("Ungültige Konfiguration");
   });
 
   it("reports read failures instead of silently using defaults", async () => {

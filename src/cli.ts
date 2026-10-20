@@ -2,6 +2,20 @@
 import { Command } from "commander";
 import { loadConfig, loadEnv } from "./config.js";
 
+async function withShutdown<T>(run: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  const controller = new AbortController();
+  const interrupt = () => { process.exitCode = 130; controller.abort(new Error("Ausführung abgebrochen.")); };
+  const terminate = () => { process.exitCode = 143; controller.abort(new Error("Ausführung abgebrochen.")); };
+  process.once("SIGINT", interrupt);
+  process.once("SIGTERM", terminate);
+  try {
+    return await run(controller.signal);
+  } finally {
+    process.removeListener("SIGINT", interrupt);
+    process.removeListener("SIGTERM", terminate);
+  }
+}
+
 const program = new Command()
   .name("ga-agent")
   .description("LangGraph-Agents auflisten und ausführen")
@@ -40,13 +54,36 @@ program
       throw new Error(`Agent "${name}" ist deaktiviert.`);
     }
 
-    const result = await runAgent(agent, { skill: options.skill });
+    const result = await withShutdown((signal) => runAgent(agent, {
+      skill: options.skill,
+      mcpServers: config.mcpServers,
+      signal,
+    }));
     console.log(result.message);
   });
+
+const mcp = program.command("mcp").description("MCP-Server anmelden und abmelden");
+
+for (const action of ["login", "logout"] as const) {
+  mcp.command(action)
+    .description(action === "login" ? "Einen OAuth-MCP-Server im Browser anmelden" : "OAuth-Anmeldung löschen und nach Möglichkeit widerrufen")
+    .argument("<server>", "Name aus mcpServers in config.json")
+    .action(async (name: string) => {
+      const config = await loadConfig();
+      const server = Object.hasOwn(config.mcpServers, name) ? config.mcpServers[name] : undefined;
+      if (!server) throw new Error(`Unbekannter MCP-Server: ${name}`);
+      if (server.transport !== "http" || !server.auth) throw new Error(`MCP-Server "${name}" ist kein OAuth-HTTP-Server.`);
+      const { loginMcpServer, logoutMcpServer } = await import("./mcp/oauth.js");
+      await withShutdown((signal) => action === "login"
+        ? loginMcpServer(name, server, { signal })
+        : logoutMcpServer(name, server, { signal }));
+      console.log(`MCP-Server "${name}": ${action === "login" ? "angemeldet" : "abgemeldet"}.`);
+    });
+}
 
 try {
   await program.parseAsync();
 } catch (error) {
   console.error(`Fehler: ${error instanceof Error ? error.message : String(error)}`);
-  process.exitCode = 1;
+  process.exitCode ||= 1;
 }

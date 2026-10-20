@@ -1,8 +1,9 @@
 # ga-agent
 
 Node.js-CLI zum Ausführen von LangGraph-Agents. Enthalten ist bislang
-der Dummy-Agent **task-collector** – ohne LLM, API-Key, externe Dienste
-oder Persistenz, aber mit Unterstützung für lokale Agent Skills.
+der Dummy-Agent **task-collector** mit Unterstützung für lokale Agent Skills
+und globale MCP-Server einschließlich interaktivem OAuth. Ohne konfigurierte
+MCP-Server werden weder LLM, API-Key noch externe Dienste benötigt.
 
 ## Voraussetzungen
 
@@ -52,8 +53,11 @@ Nach Änderungen am Quellcode ist für die gebaute CLI erneut
 | `ga-agent --help` | Hilfe anzeigen |
 | `ga-agent list` | Agents und ihren Aktivierungsstatus auflisten |
 | `ga-agent run <name> [--skill <name>]` | Einen Agent ausführen und optional einen Skill aktivieren |
+| `ga-agent mcp login <server>` | OAuth-MCP-Server im Browser anmelden |
+| `ga-agent mcp logout <server>` | Anmeldung lokal löschen und nach Möglichkeit widerrufen |
 
 Erfolgreiche Aufrufe liefern Exit-Code `0`, Fehler Exit-Code `1`.
+Abbruch laufender Agents oder Logins: `130` bei SIGINT, `143` bei SIGTERM.
 Unbekannte oder deaktivierte Agents werden nicht ausgeführt.
 
 ## Konfiguration
@@ -64,7 +68,7 @@ Die optionale JSON-Datei liegt unter:
 ~/.config/ga-agent/config.json
 ```
 
-Beispiel mit dem Standardwert:
+Beispiel mit den Standardwerten:
 
 ```json
 {
@@ -72,7 +76,8 @@ Beispiel mit dem Standardwert:
     "task-collector": {
       "enabled": true
     }
-  }
+  },
+  "mcpServers": {}
 }
 ```
 
@@ -81,8 +86,9 @@ Beispiel mit dem Standardwert:
 - Mit `"enabled": false` wird der Agent deaktiviert.
 - Ungültiges JSON, falsche Datentypen und unbekannte Einstellungen werden
   mit einer Fehlermeldung abgewiesen.
-- Die CLI legt weder die Datei noch das Verzeichnis automatisch an.
-- Die Datei enthält bislang keine Provider-, Modell- oder Prompt-Konfiguration.
+- Die CLI legt keine Konfigurationsdatei automatisch an. Ein expliziter OAuth-Login
+  erstellt bei Bedarf das separate Auth-Verzeichnis.
+- Die Datei enthält keine LLM-Provider-, Modell- oder Prompt-Konfiguration.
 
 ### Umgebungsvariablen aus `.env`
 
@@ -99,8 +105,8 @@ Beispiel:
 LANGSMITH_TRACING=false
 ```
 
-- Bei `list` und `run` wird die Datei vor dem Import und der Initialisierung
-  der Agents in `process.env` geladen, auch ohne `config.json`.
+- Bei `list`, `run` und `mcp login/logout` wird die Datei vor der Initialisierung
+  der Agents beziehungsweise MCP-Anbindung in `process.env` geladen, auch ohne `config.json`.
 - Bereits gesetzte Umgebungsvariablen haben Vorrang, auch bei leerem Wert.
 - Fehlen Datei oder Verzeichnis, läuft die CLI unverändert weiter und legt
   nichts an. Andere Lesefehler werden mit Exit-Code `1` gemeldet.
@@ -108,6 +114,146 @@ LANGSMITH_TRACING=false
 - `--help` liest weder `.env` noch `config.json`.
 - Das Format entspricht dem nativen Node.js-`.env`-Format und unterstützt
   unter anderem Kommentare und Werte in Anführungszeichen.
+
+## MCP-Server
+
+MCP-Server werden unter `mcpServers` in `config.json` **gemeinsam für alle Agents**
+konfiguriert. Unterstützt werden lokale stdio-Prozesse und Streamable HTTP:
+
+```json
+{
+  "mcpServers": {
+    "local-service": {
+      "transport": "stdio",
+      "command": "node",
+      "args": ["/absoluter/pfad/zum/mcp-server.mjs"],
+      "env": {
+        "SERVICE_TOKEN": "${SERVICE_TOKEN}"
+      }
+    },
+    "remote-service": {
+      "transport": "http",
+      "url": "https://mcp.example.com/mcp",
+      "headers": {
+        "Authorization": "Bearer ${MCP_API_TOKEN}"
+      }
+    }
+  }
+}
+```
+
+- Ohne `mcpServers` oder mit `{}` gibt es keine MCP-Verbindungen.
+- Jeder Eintrag ist standardmäßig aktiviert; `"enabled": false` überspringt ihn.
+- Servernamen: 1–32 ASCII-Buchstaben/Ziffern, `_` oder `-`, beginnend mit
+  einem Buchstaben oder einer Ziffer. Unbekannte Konfigurationsfelder werden abgewiesen.
+- stdio benötigt `command`; `args` ist optional und standardmäßig leer. Es gibt
+  keine Shell-Auswertung und keine automatische Installation von Serverpaketen.
+  Für Skripte absolute Pfade verwenden. Der SDK-Transport übernimmt eine begrenzte
+  Standardumgebung; zusätzliche Variablen werden ausdrücklich über `env` übergeben.
+- `${VARIABLE}` wird ausschließlich in `env`- und `headers`-Werten aus `process.env`
+  ersetzt, nicht rekursiv oder in Befehlen, Argumenten und URLs. Fehlende Variablen
+  aktivierter Server führen beim Verbindungsaufbau zum Fehler. Secrets können aus
+  `~/.config/ga-agent/.env` stammen; bereits gesetzte Variablen haben Vorrang.
+- HTTP-URLs dürfen keine eingebetteten Zugangsdaten oder Fragmente enthalten.
+- Tools erhalten Namen wie `mcp__remote-service_search`. Finale Namen müssen
+  eindeutig sein, höchstens 64 Zeichen lang und aus ASCII-Buchstaben/Ziffern,
+  `_` und `-` bestehen. Ungültige Namen oder Kollisionen brechen den Lauf ab.
+
+### Laufzeit und Fehlerverhalten
+
+Der gemeinsame Runner verbindet aktivierte Server erst nach Agent-Prüfung und
+Skill-Validierung. Er stellt deren ausführbare LangChain-Tools in `AgentContext`
+bereit und hält die Verbindungen bis zum Ende des Graphen offen. Pro Server gelten
+30 Sekunden für Verbindungsaufbau samt Tool-Discovery und standardmäßig für einen
+Tool-Aufruf; HTTP-Anfragen sind ebenfalls zeitlich begrenzt.
+
+- `list` und sämtliche Hilfeaufrufe verbinden keine Server und starten keinen Login.
+- Unbekannte/deaktivierte Agents und ungültige explizite Skills starten keine Server.
+- Ein nicht erreichbarer aktivierter Server oder fehlende OAuth-Anmeldung bricht
+  den Lauf mit Exit-Code `1` ab, statt unbemerkt Tools wegzulassen.
+- Verbindungen und stdio-Prozesse werden bei Erfolg, Fehler und SIGINT/SIGTERM
+  geschlossen, auch wenn nur ein Teil der Server initialisiert wurde.
+- Infrastrukturfehler enthalten keine ungefilterten Serverantworten oder Tokens;
+  stdio-Server-stderr wird nicht an die CLI weitergereicht.
+
+Der Dummy verbindet konfigurierte Server und erhält deren Tools, ruft aber ohne
+LLM keine Tools selbstständig auf. Seine erfolgreiche Ausgabe bleibt unverändert.
+MCP-Resources, MCP-Prompts und interaktive MCP-Elicitation sind nicht implementiert.
+
+### Interaktives OAuth
+
+Für einen OAuth-HTTP-Server wird statt eines statischen Authorization-Headers
+`auth` konfiguriert:
+
+```json
+{
+  "mcpServers": {
+    "remote-service": {
+      "transport": "http",
+      "url": "https://mcp.example.com/mcp",
+      "auth": {
+        "type": "oauth"
+      }
+    }
+  }
+}
+```
+
+```bash
+ga-agent mcp login remote-service
+ga-agent run task-collector
+ga-agent mcp logout remote-service
+```
+
+`login` ermittelt die OAuth-Metadaten, verwendet Authorization Code mit PKCE/S256
+und öffnet den Browser. Die Login-URL wird zusätzlich im Terminal angezeigt und
+kann bei Bedarf manuell geöffnet werden. Der Callback lauscht ausschließlich auf
+`127.0.0.1`; `state`, einmalige Verwendung und die Issuer-Zuordnung werden geprüft.
+Der Login endet spätestens nach fünf Minuten. Abbruch und Timeout schließen den
+Callback-Listener. CLI und Browser müssen auf demselben Rechner laufen; es gibt
+keinen Device-Code- oder gehosteten Callback-Flow für Remote-/SSH-Logins.
+
+OAuth benötigt HTTPS, ausgenommen Loopback-Adressen für lokale Entwicklung.
+Der Authorization-Server muss PKCE/S256 in seinen Metadaten bekanntgeben.
+Automatische Registrierung wird nur verwendet, wenn der Server sie unterstützt.
+Alternativ sind unter `auth` verfügbar:
+
+- `clientId`: vorregistrierte öffentliche Client-ID, ohne eingebautes Client-Secret.
+- `clientMetadataUrl`: HTTPS-URL eines extern bereitgestellten Client-ID-Metadatendokuments,
+  wenn der Authorization-Server dieses Verfahren unterstützt. Die CLI hostet kein Dokument.
+- `scopes`: Array explizit gewünschter OAuth-Scopes.
+- `redirectPort`: fester Loopback-Port für vorregistrierte Redirect-URIs, beispielsweise
+  `8090` für `http://127.0.0.1:8090/oauth/callback`. Ohne Vorgabe wird beim ersten Login
+  ein freier Port gewählt und bei weiterer Anmeldung derselben Konfiguration wiederverwendet.
+
+OAuth und ein statischer `Authorization`-Header dürfen nicht kombiniert werden.
+Die Anmeldung gilt für alle Agents desselben Benutzers. `run` verwendet gespeicherte
+Tokens und erneuert sie bei Ablauf oder einer 401-Antwort, soweit Refresh möglich ist.
+Es öffnet **niemals selbstständig einen Browser**. Ist eine neue Anmeldung nötig,
+weist die Fehlermeldung auf `ga-agent mcp login <server>` hin. Das gilt ebenso in CI.
+
+### OAuth-Daten und Sicherheitsgrenzen
+
+- Tokens und Registrierungsdaten liegen separat unter `~/.config/ga-agent/auth/`:
+  Verzeichnis `0700`, Dateien `0600`, jeweils im Besitz des aktuellen Benutzers.
+  Unsichere Berechtigungen und Symlinks an Auth-Verzeichnis/-Dateien werden abgewiesen.
+- **Die Dateien sind nicht verschlüsselt.** Es gibt derzeit keine Schlüsselbund-Anbindung.
+  Die Ablage vor fremdem Zugriff schützen und nicht in Git einchecken oder weitergeben.
+- Dateinamen werden aus dem Servernamen abgeleitet; Inhalte sind an Server-URL,
+  OAuth-Konfiguration und Authorization-Issuer gebunden. Nach Konfigurationsänderungen
+  kann ein neuer Login erforderlich sein. Tokens werden nicht in den Agent-Kontext,
+  Prompts oder CLI-Fehlermeldungen aufgenommen.
+- Token-Sätze werden atomar gespeichert. Prozessübergreifende Sperren mit Heartbeat
+  koordinieren parallele Refreshes und Refresh-Token-Rotation. Nach hartem Prozessabbruch
+  kann eine verwaiste Sperre bis zu einer Minute bestehen bleiben; dann erneut versuchen.
+- `logout` versucht einen Widerruf, wenn ein entsprechender Endpoint bekannt ist,
+  und löscht die lokalen Credentials auch bei einem Widerrufsfehler. In diesem Fall
+  wird ein Fehler gemeldet. Ohne Revocation-Endpoint ist Logout ausschließlich lokal.
+- Alle Agents erhalten die Berechtigungen aller aktivierten Server. Es gibt keine
+  agent-spezifischen Freigaben und keine Sandbox: lokale Prozesse laufen mit den
+  Rechten des CLI-Benutzers, Remote-Tools mit den Rechten der hinterlegten Anmeldung.
+  Nur vertrauenswürdige Server konfigurieren; Tool-Inhalte sind nicht automatisch
+  vertrauenswürdige Systemanweisungen.
 
 ## Agent Skills
 
@@ -196,14 +342,22 @@ Die Registry prüft den gemeinsamen Vertrag über `AgentDefinition`.
   `readFile(name, relativePath)`.
 - `activeSkill`: die vollständigen Daten des explizit aktivierten Skills,
   andernfalls `undefined`.
+- `mcpTools`: ausführbare Tools aller aktivierten MCP-Server, ohne Zugangsdaten.
 
-LLM-Agents verwenden `createSkillSupport(skills, activeSkill)` aus
-`src/skills/tools.ts`. Der Helper liefert:
+Die CLI übergibt die geladenen `mcpServers` an `runAgent`. Bei direkter Verwendung
+von `runAgent` werden diese ebenfalls ausdrücklich als Option übergeben.
+
+LLM-Agents verwenden `createAgentSupport(context)` aus `src/agents/tools.ts`.
+Der Helper kombiniert die bestehende Skill-Unterstützung mit MCP und liefert:
 
 - `prompt`: Skill-Katalog aus Namen und Beschreibungen; bei expliziter
   Aktivierung zusätzlich die geladenen Anweisungen. Ohne Skills ein leerer String.
 - `tools`: `load_skill` für vollständige Anweisungen samt Basisverzeichnis
-  und `read_skill_file` für ergänzende Textdateien. Ohne Skills eine leere Liste.
+  und `read_skill_file` für ergänzende Textdateien sowie alle `mcpTools`.
+  Ohne installierte Skills entfallen nur die Skill-Tools. Ohne Skills und MCP
+  ist die Liste leer. Finale Tool-Namen werden auf Kollisionen geprüft.
+
+`createSkillSupport` aus `src/skills/tools.ts` bleibt als reiner Skill-Helper verfügbar.
 
 Ein LLM-Graph muss diesen Prompt ergänzen sowie die Tools sowohl an sein
 Modell binden als auch deren Ausführung im Graphen anbinden. Das ist bewusst
@@ -231,7 +385,12 @@ src/
   agents/
     index.ts               # Statische Liste verfügbarer Agents
     runtime.ts             # Gemeinsamer Runner und LangGraph-Kontext
+    tools.ts               # Gemeinsame Skill- und MCP-Tool-Liste
     task-collector.ts      # Kompilierter Dummy-LangGraph
+  mcp/
+    index.ts               # SDK-Verbindungen, LangChain-Tools und Cleanup
+    oauth.ts               # Browser-Login, Callback, Refresh und Logout
+    credentials.ts         # Geschützte atomare Ablage und Refresh-Sperren
   skills/
     index.ts               # Discovery, Formatprüfung und Dateizugriff
     tools.ts               # Prompt-Katalog und LangChain-Tools
@@ -243,12 +402,17 @@ tests/
   task-collector.test.ts
   skills.test.ts
   agent-skills.test.ts
+  mcp.test.ts
+  oauth.test.ts
+  mcp-cli.test.ts
+  fixtures/                # Lokaler stdio-Testserver
+  helpers/                 # Lokaler HTTP-/OAuth-Testserver
 ```
 
 Die Ausführungskette ist:
 
 ```text
-CLI → .env → Konfiguration/Agent-Prüfung → Skill-Discovery → LangGraph → Ausgabe
+CLI → .env → Konfiguration/Agent-Prüfung → Skills → MCP-Tools → LangGraph → MCP-Cleanup → Ausgabe
 ```
 
 Der Agent führt tatsächlich den Graphen `START → dummy → END` aus.
@@ -256,8 +420,8 @@ Der einzige Knoten setzt eine feste Nachricht im Graph-Zustand, optional
 mit einer Bestätigung des geladenen Skills. Echte Aufgabensammlung,
 Modellaufrufe, Memory und Streaming sind noch nicht implementiert.
 
-Technik: TypeScript 7 mit ESM, LangGraph mit LangChain Core, Commander,
-YAML, Zod, Vitest und Oxlint. Das vollständige `langchain`-Paket und
+Technik: TypeScript 7 mit ESM, LangGraph mit LangChain Core, MCP SDK mit
+LangChain-MCP-Tool-Adapter, Commander, YAML, Zod, proper-lockfile, Vitest und Oxlint. Das vollständige `langchain`-Paket und
 Modelladapter werden für den Dummy nicht benötigt.
 
 ## Prüfungen
@@ -272,3 +436,6 @@ npm run build
 Die Tests verwenden temporäre Verzeichnisse statt der echten
 Benutzerkonfiguration. Die Agent- und Skill-Integrationstests blockieren
 Netzwerkaufrufe über `fetch`; LangSmith-Tracing ist in den Tests deaktiviert.
+Die MCP-/OAuth-Tests verwenden ausschließlich lokale Testserver und einen
+simulierten Browserstart, keine externen Dienste, echten Logins oder API-Keys.
+Sie prüfen auch parallele CLI-Refreshes und den Prozess-Cleanup bei SIGTERM.
